@@ -6,10 +6,10 @@ by signals, with an LLM-powered agent that reasons, acts, sleeps, and wakes.
 Full design decisions live in `01_MASTER_SPEC.md` (locked). Current status
 lives in `02_PROGRESS.md` — read that first if you're picking this up mid-build.
 
-**Status: S1 in progress.** Only repo scaffolding + Postgres + a Temporal
-connectivity check exist so far. Nothing in `backend/app/` beyond the
-placeholders is implemented yet — see the TODO comment at the top of each file
-for which build step fills it in.
+**Status: S1 verified. S2 (SQLAlchemy models) built, awaiting verification —
+see the S2 setup section below.** Nothing in `backend/app/` beyond S1+S2 is
+implemented yet — see the TODO comment at the top of each remaining file for
+which build step fills it in.
 
 ---
 
@@ -18,7 +18,9 @@ for which build step fills it in.
 - **Docker** (Desktop or Engine) — for Postgres
 - **Temporal CLI** — for the local dev server (`temporal server start-dev`)
 - **Python 3.10+**
-- Node.js 18+ and an Anthropic API key are needed later (S4, S11) — not for S1.
+- Node.js 18+ and a free Groq API key (console.groq.com/keys, no credit card
+  needed) are needed later (S4, S11) — not for S1. `USE_MOCK_LLM=true` also
+  works with no key at all.
 
 ### Installing the Temporal CLI
 
@@ -73,6 +75,40 @@ Verify: `temporal --version`
 
 Once all of the above works, S1 is verified and we move to S2 (SQLAlchemy
 models). More setup steps land here as each phase completes.
+
+---
+
+## S2 setup — SQLAlchemy models, tables, DB smoke test
+
+1. **Postgres must be running** (from S1):
+   ```bash
+   docker compose up -d
+   docker compose ps   # postgres should show "healthy"
+   ```
+
+2. **Run the DB smoke test** (from `backend/`, venv activated)
+   ```bash
+   python scripts/smoke_test_db.py
+   ```
+   This creates the 3 tables (`supervisor_configs`, `runs`, `activity_log`) if
+   they don't exist yet, inserts one row into each to prove the foreign keys
+   and JSONB columns work, prints what it inserted, then rolls the transaction
+   back — nothing is left in the database, so it's safe to re-run.
+
+   Expected output ends with:
+   ```
+   S2 smoke test PASSED — models, foreign keys, and JSONB columns all work.
+   ```
+
+3. **(Optional) look at the tables directly**, e.g. via `psql` or any Postgres
+   GUI, to confirm the schema matches `01_MASTER_SPEC.md` §4:
+   ```bash
+   docker compose exec postgres psql -U postgres -d order_supervisor -c "\dt"
+   docker compose exec postgres psql -U postgres -d order_supervisor -c "\d runs"
+   ```
+
+Once this passes, S2 is verified and we move to S3 (FastAPI skeleton +
+supervisor endpoints).
 
 ---
 
