@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Env
+.env
+
+# Node / Next.js (added in S11)
+node_modules/
+.next/
+
+# OS
+.DS_Store
+
+# Temporal dev server local db, if you use --db-filename
+*.db
