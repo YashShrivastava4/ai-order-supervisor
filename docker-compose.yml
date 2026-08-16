@@ -1,5 +1,5 @@
 services:
-  postgres:
+  order-supervisor-postgres:
     image: postgres:16
     container_name: order-supervisor-postgres
     environment:
@@ -7,15 +7,15 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: order_supervisor
     ports:
-      - "5433:5432"   # host:container — 5433 on the host to avoid colliding with
-                       # whatever else is already bound to 5432 on this machine
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
 volumes:
   postgres_data:
