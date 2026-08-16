@@ -1,20 +1,20 @@
+Watch the Walkthrough: [Walkthrough_Video](https://drive.google.com/file/d/11IHDUhzt7J8GTvUGrAVLawDK8ght8jN3/view?usp=sharing) 
+
 # Order Supervisor
 
-An AI agent that babysits a single order from the moment it's placed until it's
-resolved — without needing a human to poll it or a server to sit in a loop
-"waiting." It wakes up when something happens, decides whether to act, and
-goes back to sleep.
+An AI agent that supervises a single order from creation to completion —
+waking up only when there's something to act on, and sleeping otherwise
+rather than polling continuously.
 
 Built as a proof-of-concept take-home assignment.
 
 ---
 
-## What this actually does
+## What It Does
 
-Imagine an order comes in. Normally you'd need either a human watching it, or
-a script polling a database every few minutes forever. Neither is great —
-humans get tired, and polling scripts waste resources checking things that
-haven't changed.
+Traditional order monitoring requires either continuous human oversight or a
+script polling the database on a fixed interval — both spend resources on
+checks that usually find nothing has changed.
 
 Instead, this project starts one durable background process (a **Temporal
 workflow**) per order. That process:
@@ -33,10 +33,9 @@ workflow**) per order. That process:
    terminated it from the UI, or it simply got too old — and writes a final
    report: what it did, what it learned, and what it'd recommend next time.
 
-The trick to keeping this efficient: not every event deserves to wake the
-full LLM. A cheap rule-based **classifier** looks at each incoming event
-first. Routine, expected events get logged quietly. Only events that
-actually matter wake the (more expensive) reasoning agent.
+Not every event needs to wake the full LLM. A lightweight rule-based
+**classifier** checks each incoming event first: routine, expected events
+are logged quietly, and only events that matter wake the reasoning agent.
 
 ## Architecture
 
@@ -59,7 +58,7 @@ actually matter wake the (more expensive) reasoning agent.
 - **Backend (FastAPI)** — a thin HTTP layer that starts workflows, forwards
   events into them as Temporal signals, and reads/writes run state to
   Postgres.
-- **Temporal workflow** — the actual "brain's schedule." It never runs a
+- **Temporal workflow** — controls when the agent runs. It never runs a
   tight loop; it sleeps (via `workflow.wait_condition` with a timeout) until
   a signal arrives or its own wake-up timer fires, then hands off to an
   activity that calls the LLM.
@@ -115,9 +114,16 @@ endpoint.
 
 ## Running it locally
 
-You'll need **3 things running at once**: Postgres, a Temporal dev server,
-and the backend worker + API — then the frontend on top. It sounds like a
-lot, but each step is one command in its own terminal.
+Four processes run at once: Postgres, a Temporal dev server, the backend
+worker + API, and the frontend. Each step below is a single command run in
+its own terminal.
+
+**Prerequisites** — install these first:
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (runs Postgres — you don't configure Postgres by hand, Docker does it via `docker-compose.yml`)
+- [Node.js](https://nodejs.org/) 18+ (frontend)
+- Python 3.11+ (backend)
+- [Temporal CLI](https://docs.temporal.io/cli#install) (local workflow engine)
+- A free [Groq API key](https://console.groq.com/keys) (LLM calls)
 
 ### 1. Get a Groq API key
 Create `backend/.env` (this file is git-ignored, so your key never gets
@@ -184,59 +190,48 @@ the backend somewhere else, set `NEXT_PUBLIC_API_URL` (see `.env.example`).
 
 ## Deployment
 
-The honest version: this app has **three moving backend pieces** — Postgres,
-a Temporal server, and a Python worker that has to stay connected to
-Temporal — plus the FastAPI process. Hosting all of that for free, reliably,
-isn't realistic (Temporal in particular has no simple free-forever managed
-option). So rather than fake a "live demo" that quietly breaks, here's what's
-actually worth doing for free:
+This project has three backend components that need to run continuously:
+Postgres, a Temporal server, and a Python worker connected to Temporal.
+Hosting all three on free infrastructure reliably is not practical — Temporal
+in particular has no permanent free managed offering (see below). The
+approach below deploys the frontend only, which is sufficient for a public,
+shareable link to the UI and code.
 
 ### Deploy the frontend to Vercel (free, ~10 minutes)
 
-This gets you a real public URL for the UI/code, which is genuinely useful
-for a portfolio link — with one important caveat below.
+This produces a public URL for the UI and source code. See the limitation
+noted below regarding backend connectivity.
 
 1. Push this repo to GitHub if it isn't already there.
-2. Go to [vercel.com](https://vercel.com) and sign up/log in with GitHub.
+2. Go to [vercel.com](https://ai-order-supervisor.vercel.app/) and sign up/log in with GitHub.
 3. Click **Add New → Project**, and import this repository.
 4. Vercel auto-detects Next.js — leave the build settings as default.
 5. Before deploying, add an environment variable:
    - **Key:** `NEXT_PUBLIC_API_URL`
-   - **Value:** the public URL of your backend (see caveat below)
+   - **Value:** the public URL of your backend (see limitation below)
 6. Click **Deploy**. You'll get a URL like `https://order-supervisor.vercel.app`.
 7. Paste that URL into the placeholder at the top of this section.
 
-**The caveat, stated plainly:** the frontend has no backend of its own — it's
-just a UI that calls the FastAPI server. If `NEXT_PUBLIC_API_URL` points at
-nothing reachable (e.g. you leave it as `localhost:8000`), every page will
-load but every action (viewing runs, creating a run, etc.) will fail, because
-it's trying to reach a server that only exists on your own machine. Two
-honest ways to handle this:
+**Limitation:** the frontend has no backend of its own — it only calls the
+FastAPI server. If `NEXT_PUBLIC_API_URL` points at nothing reachable (e.g.
+it's left as `localhost:8000`), the pages will load but every action
+(viewing runs, creating a run, etc.) will fail, since the browser is trying
+to reach a server that only exists on the local machine.
 
-- **For a portfolio link:** deploy the frontend as-is and say clearly in the
-  UI/README that it's a code + design showcase, and that a live run needs the
-  backend running locally. This is a completely normal thing to do for a POC.
-- **For a live working demo (e.g. on a call):** run steps 2–5 from the local
-  setup on your machine, expose port 8000 with a tunnel (e.g.
-  `ngrok http 8000` or Cloudflare Tunnel), and set `NEXT_PUBLIC_API_URL` to
-  that tunnel URL for the session. Also add the tunnel URL to
-  `FRONTEND_ORIGINS` in `backend/.env` so CORS doesn't block it.
+### Deploying the backend as well (optional)
 
-### If you want the backend reachable too (optional, still mostly free)
-
-- **Postgres:** [Neon](https://neon.tech) has a genuinely free tier and
-  you're already familiar with it.
+- **Postgres:** [Neon](https://neon.tech) offers a free tier suitable for
+  this project.
 - **FastAPI + worker:** [Render](https://render.com) free web services work,
-  but sleep after inactivity and cold-start slowly — fine for a demo, not for
-  something you want always-on.
-- **Temporal:** this is the real blocker. Temporal Cloud doesn't have a
-  permanent free tier, and self-hosting a Temporal server reliably on a free
-  instance is more infrastructure than this POC calls for. Realistically,
-  keep Temporal + the worker running locally and treat "always-on public
-  backend" as out of scope for a free deployment — the assignment itself
-  scopes this as a local POC, not a production platform.
+  but sleep after inactivity and cold-start slowly — acceptable for an
+  occasional demo, not for an always-on service.
+- **Temporal:** the primary constraint. Temporal Cloud has no permanent free
+  tier, and reliably self-hosting a Temporal server on free infrastructure is
+  beyond the scope of this project. Temporal and the worker are intended to
+  run locally; a fully public, always-on backend is out of scope for a free
+  deployment.
 
-**Live frontend:** _add your Vercel URL here once deployed_
+**Live frontend:** [Just a Skeleton since the backend require local environment](https://ai-order-supervisor.vercel.app/)
 
 ## Project structure
 
