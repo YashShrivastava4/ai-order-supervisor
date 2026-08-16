@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatTimeOnly, normalizeUtcTimestamp } from "@/lib/format-time";
+import { API_BASE_URL } from "@/lib/api";
 
 interface Run {
   id: string;
@@ -50,7 +51,7 @@ export default function RunsPage() {
 
   const fetchRuns = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/runs");
+      const res = await fetch(`${API_BASE_URL}/api/runs`);
       if (!res.ok) throw new Error("Failed to fetch runs");
       const data = await res.json();
       setRuns(Array.isArray(data) ? data : []);

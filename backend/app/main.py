@@ -1,3 +1,4 @@
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,9 +65,19 @@ class RunRead(BaseModel):
 
 app = FastAPI(title="Order Supervisor API")
 
+# Comma-separated list of allowed frontend origins. Defaults to the local
+# Next.js dev server; add your deployed frontend's URL (e.g. a Vercel URL)
+# via the FRONTEND_ORIGINS env var, without touching this file.
+_default_origins = "http://localhost:3000"
+_allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("FRONTEND_ORIGINS", _default_origins).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

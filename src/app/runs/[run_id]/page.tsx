@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { formatDateTime, normalizeUtcTimestamp } from "@/lib/format-time";
+import { API_BASE_URL } from "@/lib/api";
 
 interface TimelineEntry {
     id: string;
@@ -83,7 +84,7 @@ export default function RunDetailPage() {
 
     const fetchRun = async () => {
         try {
-            const res = await fetch(`http://localhost:8000/api/runs/${run_id}`);
+            const res = await fetch(`${API_BASE_URL}/api/runs/${run_id}`);
             if (!res.ok) throw new Error("Failed to fetch run");
             const data = await res.json();
             setRun(data);
@@ -109,7 +110,7 @@ export default function RunDetailPage() {
         try {
             const parsedPayload = eventPayload.trim() ? JSON.parse(eventPayload) : null;
             setSendingEvent(true);
-            const res = await fetch(`http://localhost:8000/api/runs/${run_id}/events`, {
+            const res = await fetch(`${API_BASE_URL}/api/runs/${run_id}/events`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ event_type: eventType, payload: parsedPayload }),
@@ -138,7 +139,7 @@ export default function RunDetailPage() {
 
         try {
             setSendingInstruction(true);
-            const res = await fetch(`http://localhost:8000/api/runs/${run_id}/instructions`, {
+            const res = await fetch(`${API_BASE_URL}/api/runs/${run_id}/instructions`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ text: instruction.trim() }),
@@ -168,7 +169,7 @@ export default function RunDetailPage() {
 
         try {
             setSendingControl(action);
-            const res = await fetch(`http://localhost:8000/api/runs/${run_id}/${action}`, {
+            const res = await fetch(`${API_BASE_URL}/api/runs/${run_id}/${action}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
             });

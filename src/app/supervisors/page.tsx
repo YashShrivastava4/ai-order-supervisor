@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { API_BASE_URL } from "@/lib/api";
 
 interface Supervisor {
     id: string;
@@ -38,7 +39,7 @@ export default function SupervisorsPage() {
 
     const fetchSupervisors = async () => {
         try {
-            const res = await fetch("http://localhost:8000/api/supervisors");
+            const res = await fetch(`${API_BASE_URL}/api/supervisors`);
             if (!res.ok) throw new Error("Failed to fetch supervisors");
             const data = await res.json();
             setSupervisors(Array.isArray(data) ? data : []);
@@ -75,7 +76,7 @@ export default function SupervisorsPage() {
         setSubmitting(true);
 
         try {
-            const res = await fetch("http://localhost:8000/api/supervisors", {
+            const res = await fetch(`${API_BASE_URL}/api/supervisors`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
