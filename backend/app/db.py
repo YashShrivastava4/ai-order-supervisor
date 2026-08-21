@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from sqlalchemy import JSON, Column, DateTime, ForeignKey, String, Text, create_engine
@@ -11,7 +12,27 @@ from sqlalchemy.orm import (
     sessionmaker,
 )
 
-DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5433/order_supervisor"
+_DEFAULT_DATABASE_URL = (
+    "postgresql+psycopg://postgres:postgres@localhost:5433/order_supervisor"
+)
+
+
+def _use_psycopg3(url: str) -> str:
+    # Neon (and most hosts) hand you a bare postgresql:// or postgres://
+    # connection string. SQLAlchemy's default driver for that scheme is the
+    # old psycopg2, but this project only installs psycopg3 (requirements.txt).
+    # Rewriting the scheme here means any connection string works as-is,
+    # without editing what you copied from the provider's dashboard.
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://") :]
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://") :]
+    return url
+
+
+# Neon connection string in production. Falls back to the local docker-compose
+# Postgres when DATABASE_URL isn't set, so local dev works unchanged.
+DATABASE_URL = _use_psycopg3(os.getenv("DATABASE_URL", _DEFAULT_DATABASE_URL))
 
 
 class Base(DeclarativeBase):

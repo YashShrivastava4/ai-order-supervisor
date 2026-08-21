@@ -5,6 +5,12 @@ Run this once after Postgres is up and before starting the worker/API:
     python -m scripts.init_db
 """
 
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 from app.db import Base, engine
 
 

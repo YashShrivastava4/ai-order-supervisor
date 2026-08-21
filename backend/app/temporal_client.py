@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from temporalio.client import Client
 
 from app.db import SessionLocal, Supervisor
+
+# Worker and API share one container in every environment we deploy to, so
+# this stays "localhost:7233" even in production. The env var exists so the
+# value is never silently wrong, not because it needs to change here.
+TEMPORAL_ADDRESS = os.getenv("TEMPORAL_ADDRESS", "localhost:7233")
 
 
 async def start_run(
@@ -31,7 +37,7 @@ async def start_run(
     finally:
         db.close()
 
-    client = await Client.connect("localhost:7233")
+    client = await Client.connect(TEMPORAL_ADDRESS)
     workflow_id = run_id or f"run-{order_id}"
     await client.start_workflow(
         "OrderSupervisorWorkflow",
@@ -45,7 +51,7 @@ async def start_run(
 async def send_order_event_signal(
     run_id: str, event_type: str, payload: dict[str, Any] | None = None
 ) -> None:
-    client = await Client.connect("localhost:7233")
+    client = await Client.connect(TEMPORAL_ADDRESS)
     workflow_handle = client.get_workflow_handle(run_id)
     await workflow_handle.signal(
         "order_event",
@@ -54,24 +60,24 @@ async def send_order_event_signal(
 
 
 async def send_terminate_signal(run_id: str) -> None:
-    client = await Client.connect("localhost:7233")
+    client = await Client.connect(TEMPORAL_ADDRESS)
     workflow_handle = client.get_workflow_handle(run_id)
     await workflow_handle.signal("terminate")
 
 
 async def send_interrupt_signal(run_id: str) -> None:
-    client = await Client.connect("localhost:7233")
+    client = await Client.connect(TEMPORAL_ADDRESS)
     workflow_handle = client.get_workflow_handle(run_id)
     await workflow_handle.signal("interrupt")
 
 
 async def send_resume_signal(run_id: str) -> None:
-    client = await Client.connect("localhost:7233")
+    client = await Client.connect(TEMPORAL_ADDRESS)
     workflow_handle = client.get_workflow_handle(run_id)
     await workflow_handle.signal("resume")
 
 
 async def send_add_instruction_signal(run_id: str, text: str) -> None:
-    client = await Client.connect("localhost:7233")
+    client = await Client.connect(TEMPORAL_ADDRESS)
     workflow_handle = client.get_workflow_handle(run_id)
     await workflow_handle.signal("add_instruction", args=[text])

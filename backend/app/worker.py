@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -8,6 +9,10 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+# Same address the API connects to (see temporal_client.py) — worker and API
+# always share one container, so this stays "localhost:7233" in production too.
+TEMPORAL_ADDRESS = os.getenv("TEMPORAL_ADDRESS", "localhost:7233")
 
 from app.activities import (
     classify_signal,
@@ -30,8 +35,8 @@ from app.workflow import OrderSupervisorWorkflow
 
 
 async def start_worker() -> None:
-    print("Connecting to Temporal at localhost:7233...")
-    client = await Client.connect("localhost:7233")
+    print(f"Connecting to Temporal at {TEMPORAL_ADDRESS}...")
+    client = await Client.connect(TEMPORAL_ADDRESS)
     worker = Worker(
         client,
         task_queue="order-supervisor-task-queue",

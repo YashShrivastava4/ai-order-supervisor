@@ -1,0 +1,24 @@
+# Render Blueprint — deploys the backend as a single Docker web service.
+# https://render.com/docs/blueprint-spec
+#
+# This only provisions the backend. Neon (Postgres) and Vercel (frontend) sit
+# outside Render, so DATABASE_URL and FRONTEND_ORIGINS aren't set here — any
+# envVar marked sync: false gets prompted for in the Render dashboard the
+# first time this Blueprint deploys.
+services:
+  - type: web
+    name: order-supervisor-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: FRONTEND_ORIGINS
+        sync: false
+      - key: TEMPORAL_ADDRESS
+        value: localhost:7233
