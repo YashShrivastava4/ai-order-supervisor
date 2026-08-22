@@ -5,8 +5,8 @@ checks the database every few minutes whether anything happened or not. I built 
 different approach: one background process per order that stays asleep until something actually
 needs its attention, then wakes up, thinks, acts, and goes back to sleep.
 
-**🔗 Live app:** `[https://ai-order-supervisor.vercel.app/]`
-**🔗 Backend health check:** `[https://order-supervisor-backend-mrpj.onrender.com/health]`
+**🔗 Live app:** [FrontEnd](https://ai-order-supervisor.vercel.app/)
+**🔗 Backend health check:** [BackEnd][https://order-supervisor-backend-mrpj.onrender.com/health]
 
 > Wake the backend before using the app. It's hosted on a free service that goes to sleep after
 > a while of no traffic — open the health check link above first and wait for it to respond, then
