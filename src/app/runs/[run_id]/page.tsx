@@ -39,6 +39,22 @@ const EVENT_TYPES = [
     "no_update_for_n_hours",
 ];
 
+// Backend errors come back as JSON ({"detail": "..."}) but the calling code
+// was previously using the raw response body as the error message, so a
+// failed action showed the user a literal {"detail":"..."} blob instead of
+// the message inside it. This pulls the detail out, falling back to the raw
+// text for any non-JSON error body.
+async function parseErrorDetail(res: Response, fallback: string): Promise<string> {
+    const raw = await res.text();
+    try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.detail === "string") return parsed.detail;
+    } catch {
+        // Not JSON — fall through to the raw text below.
+    }
+    return raw || fallback;
+}
+
 const statusStyles: Record<string, { pill: string; label: string }> = {
     running: { pill: "bg-[#dfeee3] text-[#2d6d4b]", label: "Running" },
     sleeping: { pill: "bg-[#f8eac7] text-[#a06b1f]", label: "Sleeping" },
@@ -73,6 +89,11 @@ export default function RunDetailPage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
+    // Set once any action gets a 410 back: this run's Temporal workflow is
+    // permanently gone (not a transient error), so we stop offering actions
+    // on it for the rest of this page visit rather than let every button
+    // fail the same way one at a time.
+    const [workflowUnavailable, setWorkflowUnavailable] = useState(false);
 
     const [eventType, setEventType] = useState(EVENT_TYPES[0]);
     const [eventPayload, setEventPayload] = useState("");
@@ -117,8 +138,8 @@ export default function RunDetailPage() {
             });
 
             if (!res.ok) {
-                const detail = await res.text();
-                throw new Error(detail || "Failed to send event");
+                if (res.status === 410) setWorkflowUnavailable(true);
+                throw new Error(await parseErrorDetail(res, "Failed to send event"));
             }
             setEventPayload("");
             setFeedback({ type: "success", message: "Event sent successfully." });
@@ -146,8 +167,8 @@ export default function RunDetailPage() {
             });
 
             if (!res.ok) {
-                const detail = await res.text();
-                throw new Error(detail || "Failed to add instruction");
+                if (res.status === 410) setWorkflowUnavailable(true);
+                throw new Error(await parseErrorDetail(res, "Failed to add instruction"));
             }
             setInstruction("");
             setFeedback({ type: "success", message: "Instruction added." });
@@ -175,8 +196,8 @@ export default function RunDetailPage() {
             });
 
             if (!res.ok) {
-                const detail = await res.text();
-                throw new Error(detail || `Failed to ${action}`);
+                if (res.status === 410) setWorkflowUnavailable(true);
+                throw new Error(await parseErrorDetail(res, `Failed to ${action}`));
             }
             setFeedback({ type: "success", message: `${action.charAt(0).toUpperCase() + action.slice(1)} sent successfully.` });
             await fetchRun();
@@ -271,6 +292,16 @@ export default function RunDetailPage() {
                     <section className="rounded-[20px] border border-[#d9d0c7] bg-[#f8f5f1] p-5">
                         <div className="mb-4 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#68736c]">Operator actions</div>
 
+                        {workflowUnavailable && (
+                            <div className="mb-4 rounded-xl border border-[#d8c7a4] bg-[#f4e7d1] px-4 py-3 text-[13px] leading-5 text-[#7b4b0f]">
+                                This run&apos;s live workflow is gone from the backend — most likely the
+                                free-tier server restarted and its in-progress state was lost. The
+                                history to the left is preserved, but no further actions can be sent
+                                to this run. This is a known limitation of the current deployment, not
+                                a problem with this run specifically.
+                            </div>
+                        )}
+
                         <div className="space-y-5">
                             <div>
                                 <label className="mb-2 block text-[12px] font-medium uppercase tracking-[0.1em] text-[#586663]">Inject Event</label>
@@ -295,7 +326,7 @@ export default function RunDetailPage() {
                                 <button
                                     type="button"
                                     onClick={handleSendEvent}
-                                    disabled={sendingEvent}
+                                    disabled={sendingEvent || workflowUnavailable}
                                     className="mt-3 w-full rounded-xl bg-[#1d2a2a] px-4 py-2.5 text-[14px] font-medium text-white transition hover:bg-[#131d22] disabled:cursor-not-allowed disabled:opacity-60"
                                 >
                                     {sendingEvent ? "Sending event..." : "Send Event"}
@@ -314,7 +345,7 @@ export default function RunDetailPage() {
                                 <button
                                     type="button"
                                     onClick={handleAddInstruction}
-                                    disabled={sendingInstruction}
+                                    disabled={sendingInstruction || workflowUnavailable}
                                     className="mt-3 w-full rounded-xl bg-[#1d2a2a] px-4 py-2.5 text-[14px] font-medium text-white transition hover:bg-[#131d22] disabled:cursor-not-allowed disabled:opacity-60"
                                 >
                                     {sendingInstruction ? "Adding instruction..." : "Add Instruction"}
@@ -328,7 +359,7 @@ export default function RunDetailPage() {
                                         <button
                                             type="button"
                                             onClick={() => handleControl("interrupt")}
-                                            disabled={sendingControl !== null}
+                                            disabled={sendingControl !== null || workflowUnavailable}
                                             className="w-full rounded-xl border border-[#d8c7a4] bg-[#f4e7d1] px-4 py-2.5 text-[14px] font-medium text-[#7b4b0f] transition hover:bg-[#eedbb0] disabled:cursor-not-allowed disabled:opacity-60"
                                         >
                                             {sendingControl === "interrupt" ? "Interrupting..." : "Interrupt"}
@@ -338,7 +369,7 @@ export default function RunDetailPage() {
                                         <button
                                             type="button"
                                             onClick={() => handleControl("resume")}
-                                            disabled={sendingControl !== null}
+                                            disabled={sendingControl !== null || workflowUnavailable}
                                             className="w-full rounded-xl border border-[#c7dbc9] bg-[#dfeee3] px-4 py-2.5 text-[14px] font-medium text-[#2d6d4b] transition hover:bg-[#d3e8d4] disabled:cursor-not-allowed disabled:opacity-60"
                                         >
                                             {sendingControl === "resume" ? "Resuming..." : "Resume"}
@@ -348,7 +379,7 @@ export default function RunDetailPage() {
                                         <button
                                             type="button"
                                             onClick={() => handleControl("terminate")}
-                                            disabled={sendingControl !== null}
+                                            disabled={sendingControl !== null || workflowUnavailable}
                                             className="w-full rounded-xl border border-[#e9b7bd] bg-[#f8dfe1] px-4 py-2.5 text-[14px] font-medium text-[#9e2c38] transition hover:bg-[#f0cfd5] disabled:cursor-not-allowed disabled:opacity-60"
                                         >
                                             {sendingControl === "terminate" ? "Terminating..." : "Terminate"}

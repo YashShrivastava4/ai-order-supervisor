@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from app.db import Run, SessionLocal, Supervisor
-from app.temporal_client import start_run
+from app.temporal_client import WorkflowNotFoundError, start_run
 
 
 def _format_utc_datetime(value: datetime | None) -> str | None:
@@ -61,6 +61,20 @@ class RunRead(BaseModel):
     supervisor_id: str
     order_context: str | None = None
     status: str
+
+
+# Shown when a signal targets a run whose Temporal workflow no longer exists
+# on the server — see WorkflowNotFoundError in temporal_client.py and
+# notes.md for the full investigation (Render free-tier container restarts
+# wipe the Temporal dev server's local sqlite persistence; Neon/the run's
+# history is unaffected).
+WORKFLOW_UNAVAILABLE_DETAIL = (
+    "This run's live workflow is no longer available on the backend, most likely "
+    "because the free-tier server restarted and its in-progress Temporal state "
+    "was lost. This run's history above is preserved, but no further actions can "
+    "be taken on it. This is a known limitation of the current free-tier "
+    "deployment, not a problem with this specific run."
+)
 
 
 app = FastAPI(title="Order Supervisor API")
@@ -233,6 +247,8 @@ async def send_order_event(run_id: str, payload: OrderEventRequest):
             "run_id": run_id,
             "event_type": payload.event_type,
         }
+    except WorkflowNotFoundError:
+        raise HTTPException(status_code=410, detail=WORKFLOW_UNAVAILABLE_DETAIL)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -244,6 +260,8 @@ async def terminate_run(run_id: str):
     try:
         await send_terminate_signal(run_id)
         return {"status": "terminate sent", "run_id": run_id}
+    except WorkflowNotFoundError:
+        raise HTTPException(status_code=410, detail=WORKFLOW_UNAVAILABLE_DETAIL)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -255,6 +273,8 @@ async def interrupt_run(run_id: str):
     try:
         await send_interrupt_signal(run_id)
         return {"status": "interrupt sent", "run_id": run_id}
+    except WorkflowNotFoundError:
+        raise HTTPException(status_code=410, detail=WORKFLOW_UNAVAILABLE_DETAIL)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -266,6 +286,8 @@ async def resume_run(run_id: str):
     try:
         await send_resume_signal(run_id)
         return {"status": "resume sent", "run_id": run_id}
+    except WorkflowNotFoundError:
+        raise HTTPException(status_code=410, detail=WORKFLOW_UNAVAILABLE_DETAIL)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -285,6 +307,8 @@ async def add_instruction(run_id: str, payload: InstructionRequest):
     try:
         await send_add_instruction_signal(run_id, cleaned)
         return {"status": "instruction sent", "run_id": run_id, "text": cleaned}
+    except WorkflowNotFoundError:
+        raise HTTPException(status_code=410, detail=WORKFLOW_UNAVAILABLE_DETAIL)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
