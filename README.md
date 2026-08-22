@@ -6,7 +6,7 @@ different approach: one background process per order that stays asleep until som
 needs its attention, then wakes up, thinks, acts, and goes back to sleep.
 
 **🔗 Live app:** [FrontEnd](https://ai-order-supervisor.vercel.app/)
-**🔗 Backend health check:** [BackEnd][https://order-supervisor-backend-mrpj.onrender.com/health]
+**🔗 Backend health check:** [BackEnd](https://order-supervisor-backend-mrpj.onrender.com/health)
 
 > Wake the backend before using the app. It's hosted on a free service that goes to sleep after
 > a while of no traffic — open the health check link above first and wait for it to respond, then
