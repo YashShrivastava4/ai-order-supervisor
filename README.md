@@ -69,17 +69,24 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["Order created"] --> B["Workflow starts, agent makes its first decision"]
+    A["Order created"] --> B["Workflow starts,<br/>agent makes first decision"]
     B --> C["Workflow goes to sleep"]
+
     C --> D{"What wakes it up?"}
+
     D -->|"An event comes in"| E{"Is it worth waking up for?"}
-    E -->|"No — routine event"| F["Just log it, stay asleep"]
-    E -->|"Yes — urgent event"| G["Agent decides what to do"]
+    E -->|"No — routine event"| F["Just log it,<br/>stay asleep"]
+    F --> C
+
+    E -->|"Yes — urgent event"| G["Agent decides<br/>what to do"]
+
     D -->|"Its own timer runs out"| G
-    G --> H["Actions get logged,<br/>memory updated, new sleep time set"]
-    H --> C
-    C --> I{"Should this run end?"}
-    I -->|"Delivered, terminated,<br/>or too old"| J["Write final summary, done"]
+
+    G --> H["Actions get logged,<br/>memory updated,<br/>new sleep time set"]
+
+    H --> I{"Should this run end?"}
+
+    I -->|"Yes — delivered,<br/>terminated, or too old"| J["Write final summary,<br/>done"]
     I -->|"No"| C
 ```
 
