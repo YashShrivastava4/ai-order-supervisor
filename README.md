@@ -5,8 +5,8 @@ checks the database every few minutes whether anything happened or not. I built 
 different approach: one background process per order that stays asleep until something actually
 needs its attention, then wakes up, thinks, acts, and goes back to sleep.
 
-**🔗 Live app:** `[paste your Vercel URL here]`
-**🔗 Backend health check:** `[paste your Render URL here]/health`
+**🔗 Live app:** `[https://ai-order-supervisor.vercel.app/]`
+**🔗 Backend health check:** `[https://order-supervisor-backend-mrpj.onrender.com/health]`
 
 > Wake the backend before using the app. It's hosted on a free service that goes to sleep after
 > a while of no traffic — open the health check link above first and wait for it to respond, then
@@ -58,7 +58,7 @@ A few choices worth explaining:
   history to the LLM every single time.
 
 ```mermaid
-flowchart LR
+flowchart TD
     UI["Next.js Dashboard"] -->|"create run, send events,<br/>add instructions"| API["FastAPI Backend"]
     API <-->|"starts workflow,<br/>sends signals"| WF["Temporal Workflow<br/>(one per order)"]
     WF <-->|"reasoning calls"| LLM["Groq LLM"]
@@ -261,4 +261,4 @@ projects like this one to get hands-on with backend systems, workflow orchestrat
 real applications — the kind of work I'm aiming to do in Software Engineering, Backend
 Engineering, and Data Engineering roles.
 
-[LinkedIn](https://www.linkedin.com/in/yash-shrivastava-a84465246/) · [GitHub](https://github.com/YashShrivastava4) · [yash.shrivastava494@gmail.com](mailto:yash.shrivastava494@gmail.com)
+[LinkedIn](https://www.linkedin.com/in/yashshrivastava494) · [GitHub](https://github.com/YashShrivastava4) · [yash.shrivastava494@gmail.com](mailto:yash.shrivastava494@gmail.com)

@@ -9,7 +9,7 @@ loop.
 ## System Design
 
 ```mermaid
-flowchart LR
+flowchart TD
     UI["Next.js UI<br/>(dashboard, event testing, controls)"] -->|"HTTP"| API["FastAPI backend<br/>(starts workflows, sends signals)"]
     API --> WF["Temporal workflow<br/>(one per order)"]
     WF --> ACT["Activities<br/>(LLM calls, database writes)"]
@@ -75,7 +75,7 @@ nothing is actually sent to a real system. That's intentional for this project's
 ## Deployment
 
 ```mermaid
-flowchart LR
+flowchart TD
     V["Vercel<br/>(frontend)"] -->|"HTTPS"| R["Render<br/>(API + worker + Temporal server,<br/>one container)"]
     R --> N[("Neon<br/>managed Postgres")]
 ```
