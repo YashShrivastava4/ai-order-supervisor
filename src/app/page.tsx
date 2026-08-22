@@ -30,8 +30,8 @@ const formatMemorySnippet = (value: string | null) => {
   return value.length > 110 ? `${value.slice(0, 107).trim()}...` : value;
 };
 
-// Purely a display computation: the backend status stays "running" while asleep,
-// so we show "Sleeping" whenever there's a real future wake-up time.
+// The backend status stays "running" while asleep, so show "Sleeping"
+// whenever there's a real future wake-up time
 const getDisplayStatus = (status: string, nextWakeupAt: string | null) => {
   if (status !== "running" || !nextWakeupAt) return status;
   const normalized = normalizeUtcTimestamp(nextWakeupAt);
@@ -62,6 +62,7 @@ export default function RunsPage() {
     }
   };
 
+  // Poll every 2 seconds so the dashboard reflects the agent's activity live
   useEffect(() => {
     void fetchRuns();
     const interval = setInterval(() => {

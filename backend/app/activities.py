@@ -12,6 +12,7 @@ from temporalio import activity
 from app.db import ActivityLog, Run, SessionLocal
 
 
+# Turns a timestamp into a UTC string like "2026-08-16T05:43:00Z" for the API
 def _format_utc_datetime(value: datetime | None) -> str | None:
     if value is None:
         return None
@@ -24,6 +25,8 @@ def _format_utc_datetime(value: datetime | None) -> str | None:
     return value.isoformat().replace("+00:00", "Z")
 
 
+# Grabs the most recent activity log rows for a run, oldest first, so the
+# agent has recent history to reason about
 def _recent_activity_context(run_id: str, limit: int = 15) -> list[dict[str, Any]]:
     db = SessionLocal()
     try:
@@ -48,6 +51,7 @@ def _recent_activity_context(run_id: str, limit: int = 15) -> list[dict[str, Any
     ]
 
 
+# Collects any manual instructions a person has added to this run so far
 def _run_specific_instructions(run_id: str) -> list[str]:
     db = SessionLocal()
     try:
@@ -70,6 +74,7 @@ def _run_specific_instructions(run_id: str) -> list[str]:
     return instructions
 
 
+# Events that should always wake the agent up right away
 URGENT_EVENTS = {
     "payment_failed",
     "shipment_delayed",
@@ -77,6 +82,8 @@ URGENT_EVENTS = {
     "customer_message_received",
 }
 
+# Routine events that can just be logged, unless the supervisor wants to
+# wake up for everything or the agent specifically asked to be told about them
 NONURGENT_EVENTS = {
     "order_created",
     "payment_confirmed",
@@ -85,6 +92,7 @@ NONURGENT_EVENTS = {
 }
 
 
+# Decides whether an event should wake the agent now or just be logged for later
 def classify_event(
     event_type: str,
     wakeup_guidance: list[str] | None = None,
@@ -102,9 +110,11 @@ def classify_event(
     return "wake_now"
 
 
+# Used unless a supervisor has its own model configured
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 
 
+# Picks which Groq model to use for this supervisor
 def _resolve_model(supervisor: dict) -> str:
     configured = supervisor.get("model_config")
     if isinstance(configured, str) and configured.strip():
@@ -112,6 +122,7 @@ def _resolve_model(supervisor: dict) -> str:
     return DEFAULT_GROQ_MODEL
 
 
+# Shared helper: saves one business action (like messaging a team) to the activity log
 def _write_activity_log_row(run_id: str, action: str, details: str) -> dict[str, str]:
     payload = {"action": str(action), "details": str(details)}
     db = SessionLocal()
@@ -131,6 +142,8 @@ def _write_activity_log_row(run_id: str, action: str, details: str) -> dict[str,
         db.close()
 
 
+# The 5 business actions the agent can take. Each just writes a row to the
+# activity log — nothing is actually sent to a real team or customer.
 @activity.defn
 async def message_fulfillment_team(run_id: str, details: str) -> dict[str, str]:
     return _write_activity_log_row(run_id, "message_fulfillment_team", details)
@@ -156,6 +169,7 @@ async def create_internal_note(run_id: str, details: str) -> dict[str, str]:
     return _write_activity_log_row(run_id, "create_internal_note", details)
 
 
+# Saves a routine event to the activity log without waking the agent up
 @activity.defn
 async def log_incoming_event(
     run_id: str, event_type: str, payload: dict | None = None
@@ -177,6 +191,7 @@ async def log_incoming_event(
         db.close()
 
 
+# Saves a person's manual instruction to the activity log so the agent sees it next turn
 @activity.defn
 async def record_manual_instruction(run_id: str, text: str) -> dict[str, str]:
     cleaned = str(text).strip()
@@ -230,6 +245,7 @@ async def record_sleep_decision(
         db.close()
 
 
+# Saves the run's next wake-up time to the database (or clears it if there isn't one)
 @activity.defn
 async def sync_run_next_wakeup(
     run_id: str, next_wakeup_at: str | None
@@ -256,6 +272,7 @@ async def sync_run_next_wakeup(
         db.close()
 
 
+# Saves the agent's updated memory summary and wake-up guidance to the database
 @activity.defn
 async def sync_run_memory_and_guidance(
     run_id: str,
@@ -284,6 +301,8 @@ async def sync_run_memory_and_guidance(
         db.close()
 
 
+# The main agent call: asks Groq what to do next given the run's history,
+# then returns a normalized decision (actions, memory, sleep, etc.)
 @activity.defn
 async def run_agent_turn(
     trigger_type: str,
@@ -293,6 +312,7 @@ async def run_agent_turn(
     event: dict | None = None,
     order_context: str | None = None,
 ) -> dict:
+    # Pull together everything the agent needs to know about this run so far
     db = SessionLocal()
     try:
         run_row = db.get(Run, run_id)
@@ -324,6 +344,7 @@ async def run_agent_turn(
             + "\n"
         )
 
+    # Tell the model exactly what JSON shape to respond with
     system_prompt = (
         f"{base_instruction}\n\n"
         "You are an order supervisor. "
@@ -353,6 +374,7 @@ async def run_agent_turn(
         "available_actions": available_actions,
     }
 
+    # Ask Groq for a decision
     try:
         response = client.chat.completions.create(
             model=_resolve_model(supervisor),
@@ -380,6 +402,8 @@ async def run_agent_turn(
     if not isinstance(decision, dict):
         raise RuntimeError(f"Groq returned a non-object payload for run {run_id}")
 
+    # Don't trust the model's JSON blindly — clean it up into a shape the
+    # rest of the app can rely on, falling back to safe defaults where needed
     actions = decision.get("actions") or []
     normalized_actions = []
     if isinstance(actions, list):
@@ -428,6 +452,7 @@ async def run_agent_turn(
     return normalized
 
 
+# Thin wrapper so the workflow can call classify_event as a Temporal activity
 @activity.defn
 async def classify_signal(
     event_type: str,
@@ -437,11 +462,11 @@ async def classify_signal(
     return classify_event(event_type, wakeup_guidance, wakeup_aggressiveness)
 
 
+# Asks Groq to write a final summary once the run is ending
 @activity.defn
 async def generate_final_output(
     run_id: str, order_id: str, supervisor: dict, completion_reason: str
 ) -> dict[str, Any]:
-    """Generate final summary using Groq."""
     db = SessionLocal()
     try:
         recent_activity_log = _recent_activity_context(run_id)

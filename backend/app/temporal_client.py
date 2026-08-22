@@ -15,19 +15,8 @@ TEMPORAL_ADDRESS = os.getenv("TEMPORAL_ADDRESS", "localhost:7233")
 
 
 class WorkflowNotFoundError(Exception):
-    """A signal targeted a run whose Temporal workflow no longer exists on
-    the server.
-
-    On this deployment (Temporal dev server, local sqlite persistence,
-    inside the same container as the API), the most common cause is the
-    Render free-tier container spinning down on idle and later restarting
-    into a fresh, empty filesystem — the run's history in Neon is untouched,
-    but the in-progress Temporal execution itself is gone. See notes.md for
-    the full investigation and the options for actually eliminating this
-    (upgrading off the free tier, or moving Temporal's persistence off local
-    disk) versus the graceful-degradation path implemented here.
-    """
-
+    # Raised when a signal targets a run whose Temporal workflow no longer
+    # exists on the server — usually a Render free-tier restart wiping it
     def __init__(self, run_id: str):
         self.run_id = run_id
         super().__init__(f"no live workflow found for run {run_id!r}")
@@ -38,9 +27,8 @@ def _is_not_found(exc: RPCError) -> bool:
 
 
 async def _signal(run_id: str, signal_name: str, args: list[Any] | None = None) -> None:
-    """Send a signal to run_id's workflow, translating a not-found RPCError
-    into WorkflowNotFoundError so callers can handle that case distinctly
-    from other failures (network issues, bad payloads, etc.)."""
+    # Sends a signal to run_id's workflow, turning a not-found error into
+    # WorkflowNotFoundError so callers can handle that case separately
     client = await Client.connect(TEMPORAL_ADDRESS)
     handle: WorkflowHandle = client.get_workflow_handle(run_id)
     try:
@@ -54,6 +42,7 @@ async def _signal(run_id: str, signal_name: str, args: list[Any] | None = None) 
         raise
 
 
+# Starts a new Temporal workflow for an order, given its supervisor config
 async def start_run(
     order_id: str,
     supervisor_id: str,
@@ -80,6 +69,7 @@ async def start_run(
 
     client = await Client.connect(TEMPORAL_ADDRESS)
     workflow_id = run_id or f"run-{order_id}"
+    # Starts a new Temporal workflow, one per run, using the run's own id
     await client.start_workflow(
         "OrderSupervisorWorkflow",
         args=[workflow_id, order_id, supervisor_payload, order_context],
@@ -89,6 +79,7 @@ async def start_run(
     return workflow_id
 
 
+# Thin wrappers so the API only has to call one function per signal type
 async def send_order_event_signal(
     run_id: str, event_type: str, payload: dict[str, Any] | None = None
 ) -> None:

@@ -4,6 +4,8 @@ import json
 import httpx
 
 
+# Quick manual test: creates a demo supervisor and starts one run against
+# a locally running API (python -m scripts.seed_demo)
 async def main():
     base = "http://localhost:8000"
     async with httpx.AsyncClient() as client:

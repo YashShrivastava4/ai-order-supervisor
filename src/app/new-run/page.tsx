@@ -25,6 +25,7 @@ export default function NewRunPage() {
         order_context: "",
     });
 
+    // Loads the list of supervisors to pick from, and defaults to the first one
     const fetchSupervisors = async () => {
         try {
             const res = await fetch(`${API_BASE_URL}/api/supervisors`);
@@ -46,6 +47,7 @@ export default function NewRunPage() {
         void fetchSupervisors();
     }, []);
 
+    // Creates the run, then jumps straight to its detail page
     const handleSubmit = async (event: React.FormEvent) => {
         event.preventDefault();
         setError(null);

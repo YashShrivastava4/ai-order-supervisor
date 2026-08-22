@@ -14,6 +14,7 @@ from app.db import Run, SessionLocal, Supervisor
 from app.temporal_client import WorkflowNotFoundError, start_run
 
 
+# Turns a timestamp into a UTC string like "2026-08-16T05:43:00Z" for the API
 def _format_utc_datetime(value: datetime | None) -> str | None:
     if value is None:
         return None
@@ -63,11 +64,8 @@ class RunRead(BaseModel):
     status: str
 
 
-# Shown when a signal targets a run whose Temporal workflow no longer exists
-# on the server — see WorkflowNotFoundError in temporal_client.py and
-# notes.md for the full investigation (Render free-tier container restarts
-# wipe the Temporal dev server's local sqlite persistence; Neon/the run's
-# history is unaffected).
+# Shown when a signal targets a run whose workflow no longer exists on the
+# server (see WorkflowNotFoundError in temporal_client.py)
 WORKFLOW_UNAVAILABLE_DETAIL = (
     "This run's live workflow is no longer available on the backend, most likely "
     "because the free-tier server restarted and its in-progress Temporal state "
@@ -178,6 +176,7 @@ def get_supervisor(supervisor_id: str):
         db.close()
 
 
+# Creates the run's database row, then starts its Temporal workflow
 @app.post("/api/runs", response_model=RunRead)
 async def create_run(payload: RunCreateRequest):
     order_id = payload.order_id
@@ -236,6 +235,8 @@ class OrderEventRequest(BaseModel):
     payload: dict | None = None
 
 
+# The endpoints below all send a signal to a run's Temporal workflow, and all
+# turn a WorkflowNotFoundError into a 410 (see WORKFLOW_UNAVAILABLE_DETAIL above)
 @app.post("/api/runs/{run_id}/events")
 async def send_order_event(run_id: str, payload: OrderEventRequest):
     from app.temporal_client import send_order_event_signal

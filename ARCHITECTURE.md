@@ -1,65 +1,108 @@
-# Architecture Note — Order Supervisor
+# Architecture — AI Order Supervisor
 
 ## Overview
 
-Order Supervisor is a proof-of-concept AI agent that supervises a single order from creation to completion. Each order gets its own long-running Temporal workflow, which stays alive for the lifetime of the order, waking up to think and act only when something warrants it — never running in a continuous loop.
+Each order gets its own background process (a Temporal workflow) that lives from creation to
+completion. It does nothing until there's a real reason to act — no polling, no fixed check-in
+loop.
 
 ## System Design
 
+```mermaid
+flowchart LR
+    UI["Next.js UI<br/>(dashboard, event testing, controls)"] -->|"HTTP"| API["FastAPI backend<br/>(starts workflows, sends signals)"]
+    API --> WF["Temporal workflow<br/>(one per order)"]
+    WF --> ACT["Activities<br/>(LLM calls, database writes)"]
+    API --> DB[("Postgres<br/>supervisors, runs, activity log")]
+    ACT --> DB
 ```
- Next.js UI  ───►  FastAPI backend  ───►  Temporal workflow (1 per order)
- (config,           (REST API,             │
-  monitoring,        starts workflows,     ├─► Activities (LLM calls, DB writes)
-  event injection)   sends signals)        │
-                                            └─► Postgres (supervisors, runs, activity_log)
+
+- **Frontend (Next.js + Tailwind):** set up supervisors, start runs, send test events, add
+  instructions, pause/resume/terminate a run, watch its timeline and memory update.
+- **Backend (FastAPI):** thin layer between the frontend and everything else — starts workflows,
+  passes events into them, sends run/timeline data back to the UI.
+- **Temporal workflow:** one per order. Holds the run's state (memory, next wake-up time, paused
+  or not) and decides *when* the agent should think. Never talks to the LLM or database directly.
+- **The agent (Groq, in an activity called `run_agent_turn`):** reads recent history, asks the LLM
+  what to do, gets back a decision — actions to take, an updated memory summary, how long to sleep.
+- **Database (Postgres):** three tables — `supervisors`, `runs`, `activity_log`. Every event,
+  sleep decision, action, instruction, and final summary is one row in `activity_log`.
+
+## What Wakes the Workflow Up
+
+Only three things:
+
+1. **It just started** — the agent makes its first decision the moment a run is created.
+2. **An event came in** — payment failed, shipment delayed, customer message, etc.
+3. **A timer ran out** — the agent's own last "check back in X hours" decision came due.
+
+## What Makes a Run End
+
+Only three fixed rules — never the LLM's own opinion:
+
+- the order was marked delivered
+- someone terminated the run from the dashboard
+- the run hit a max age (72 hours)
+
+The agent can say "I think this is done," but that alone changes nothing. An ending that follows
+fixed rules is easier to trust and explain than one left to a model's judgment.
+
+## Deciding What's Worth Waking Up For
+
+A quick rule check (`classify_event`) runs before the LLM ever gets involved:
+
+- **Clearly urgent** (payment failed, shipment delayed, refund requested, customer message) →
+  always wakes the agent.
+- **Routine** (order created, payment confirmed, shipment created) → just logged, stays asleep —
+  unless the supervisor is set to a more sensitive mode.
+- **Unrecognized** → wakes the agent anyway, so nothing unusual slips through silently.
+
+This keeps LLM calls low. The agent can also update its own "wake me up for this" list after each
+turn, so the check gets smarter about that specific order over time.
+
+## Memory, Not a Full Transcript
+
+- One short memory summary per run, rewritten by the agent every time it acts.
+- Each turn also gets the 15 most recent activity log entries and any manual instructions.
+- Keeps enough context without sending the full run history to the LLM every time.
+
+## The Business Actions
+
+Five actions the agent can take: message fulfillment, message payments, message logistics,
+message the customer, or leave an internal note. Each one just writes a row to the activity log —
+nothing is actually sent to a real system. That's intentional for this project's scope.
+
+## Deployment
+
+```mermaid
+flowchart LR
+    V["Vercel<br/>(frontend)"] -->|"HTTPS"| R["Render<br/>(API + worker + Temporal server,<br/>one container)"]
+    R --> N[("Neon<br/>managed Postgres")]
 ```
 
-- **Frontend (Next.js + Tailwind):** configure supervisors, start runs, inject events, add instructions, control runs, and inspect timeline/memory/final output.
-- **Backend (FastAPI):** thin REST layer over Postgres and the Temporal client — creates workflows, forwards signals, and serves run/timeline data to the UI.
-- **Orchestration (Temporal Python SDK):** one `OrderSupervisorWorkflow` per order. The workflow holds run state (memory, wake-up guidance, pause state) and decides *when* to think; it never calls the LLM or the database directly.
-- **Agent runtime (Groq, via Activities):** all reasoning happens inside an Activity, `run_agent_turn`, which reads recent context, calls the LLM, and returns a structured decision (actions, memory update, sleep instruction).
-- **Persistence (Postgres):** three tables — `supervisors`, `runs`, `activity_log`. A single `activity_log` table (as the brief allows) stores incoming events, sleep decisions, agent actions, manual instructions, and final output, all differentiated by a `type` column.
+- **Frontend — Vercel.** `NEXT_PUBLIC_API_URL` points at the Render backend. Without it set
+  correctly, nothing loads — the frontend has no backend of its own.
+- **Backend — Render.** One free web service runs the Temporal server, the Temporal worker, and
+  FastAPI together — Render's free tier only covers one service, so running them separately would
+  cost extra. Needs `DATABASE_URL`, `GROQ_API_KEY`, and `FRONTEND_ORIGINS` set.
+- **Database — Neon.** Chosen over Render's own free database, which gets deleted 30 days after
+  creation. Neon's free tier doesn't expire.
+- **No managed Temporal service:** Temporal Cloud starts at $100/month, so this project runs its
+  own small Temporal server inside the free Render container instead.
+- **The trade-off:** the Temporal server's state lives in a file inside the container. Render's
+  free tier wipes that file on restart, so a sleeping run loses its live workflow when that
+  happens (the run's history in the database is fine — only further actions on that run stop
+  working). See [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) for details and what would fix it properly.
 
-## Workflow Lifecycle
+## What's Deliberately Left Out
 
-The workflow supports the three required triggers for agent inference, all routed through the same `run_agent_turn` activity so there's one agent runtime rather than duplicated logic per trigger:
+This is a proof-of-concept, so a few things are left out on purpose:
 
-1. **Workflow start** — fires immediately when a run is created, seeded with the order context and the supervisor's base instruction.
-2. **Incoming signal** (`order_event`) — an order event arrives from outside.
-3. **Scheduled wake-up** — a timer set by the agent's previous sleep decision elapses.
+- Real messaging or commerce integrations — actions just get logged, nothing is actually sent.
+- User accounts, authentication, or multiple separate businesses.
+- Trimming a run's history for extremely long-running orders (`continue_as_new` in Temporal
+  terms) — the rolling memory summary already covers this project's scope.
+- Analytics beyond the run list and filters already in the dashboard.
+- A separate "pause" button — pause and interrupt do the same thing here, so they're one signal.
 
-A workflow ends only through explicit, workflow-owned rules — never because the LLM decides to stop:
-- a terminal order event (`delivered`) arrives,
-- the run is manually terminated from the UI,
-- or a max workflow age (72 hours) is reached.
-
-The agent can *recommend* completion in its response, but that recommendation is not currently wired to end the workflow — only the three rules above can. This was a deliberate choice to keep completion deterministic and auditable, per the brief's explicit requirement that the AI not be the sole authority on when a run ends.
-
-## Wake/Sleep Decision Flow
-
-Every incoming event first passes through a lightweight, deterministic classifier (`classify_event`) before it ever reaches the LLM:
-
-- Known urgent events (`payment_failed`, `shipment_delayed`, `refund_requested`, `customer_message_received`) or anything on the run's own agent-generated **wake-up guidance** list → wake the agent now.
-- Known routine events (`order_created`, `payment_confirmed`, `shipment_created`, `no_update_for_n_hours`) → logged only, workflow stays asleep, unless the supervisor is configured with `high` wake-up aggressiveness.
-- Any **unrecognized** event type defaults to waking the agent — a fail-safe so unknown signals are never silently dropped.
-
-This keeps routine noise from costing an LLM call, while giving the agent a way to refine its own sensitivity over time: after each turn, the agent can update the wake-up guidance list, effectively teaching the classifier what matters for that specific order going forward.
-
-## Memory and Context Compaction
-
-Each run keeps a single rolling **memory summary** (plain text, rewritten by the agent every turn) instead of a full transcript. Each agent turn also receives the 15 most recent `activity_log` entries and any run-specific manual instructions as additional context. This bounds the size of what's sent to the LLM regardless of how long a run has been active, at the cost of not implementing `continue_as_new` for very long-running workflow histories — an acceptable simplification for a POC of this scope, and one of the brief's own listed "good-to-have, not mandatory" items.
-
-## Business Actions
-
-The five required actions (`message_fulfillment_team`, `message_payments_team`, `message_logistics_team`, `message_customer`, `create_internal_note`) don't send anything externally, as scoped. Each is its own Temporal Activity that writes one row to `activity_log`, which the UI renders in the run's timeline — satisfying the requirement without a separate messages table.
-
-## Known Simplifications
-
-In line with the brief's scope boundaries, the following were intentionally left out:
-- Real commerce/messaging integrations, authentication, multi-tenant hardening.
-- `continue_as_new` for very long histories.
-- A more advanced memory-compaction strategy beyond the rolling summary described above.
-- Richer run analytics beyond the list/filter view.
-- A separate literal "pause" control — Interrupt and Pause were merged into a single signal, since they're functionally identical here (both stop the agent from acting until Resume is sent).
-
-None of these affect the required acceptance criteria; they're flagged here for transparency rather than left unaddressed.
+Listed here so it's clear these were left out on purpose, not missed.

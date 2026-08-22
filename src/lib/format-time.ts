@@ -1,15 +1,7 @@
-// Shared timestamp helpers.
-//
-// The FastAPI backend always serializes timestamps as UTC ISO-8601 with an
-// explicit "Z" (see _format_utc_datetime in backend/app/main.py). This file is
-// the single place that interprets those strings, so next_wakeup_at,
-// created_at, updated_at, and activity-log created_at all render the same
-// way everywhere in the UI.
-//
-// normalizeUtcTimestamp keeps a defensive fallback: if a timestamp is ever
-// missing an explicit timezone suffix, we treat it as UTC rather than
-// letting the browser guess (which silently parses it as local time and
-// produces an offset display bug).
+// Shared timestamp helpers. The backend always sends UTC ISO-8601 strings
+// ending in "Z", and this file is the one place that parses and formats them.
+// If a timestamp is ever missing its timezone suffix, treat it as UTC rather
+// than letting the browser guess and silently show the wrong local time.
 export const normalizeUtcTimestamp = (
   value: string | null | undefined
 ): string | null => {

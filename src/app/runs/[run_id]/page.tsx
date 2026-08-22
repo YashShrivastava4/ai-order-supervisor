@@ -39,11 +39,8 @@ const EVENT_TYPES = [
     "no_update_for_n_hours",
 ];
 
-// Backend errors come back as JSON ({"detail": "..."}) but the calling code
-// was previously using the raw response body as the error message, so a
-// failed action showed the user a literal {"detail":"..."} blob instead of
-// the message inside it. This pulls the detail out, falling back to the raw
-// text for any non-JSON error body.
+// Backend errors come back as JSON ({"detail": "..."}), so pull the message
+// out instead of showing the user the raw JSON blob
 async function parseErrorDetail(res: Response, fallback: string): Promise<string> {
     const raw = await res.text();
     try {
@@ -70,8 +67,8 @@ const formatSummaryValue = (value: unknown) => {
     return "No details available.";
 };
 
-// Purely a display computation: the backend status stays "running" while asleep,
-// so we show "Sleeping" whenever there's a real future wake-up time.
+// The backend status stays "running" while asleep, so show "Sleeping"
+// whenever there's a real future wake-up time
 const getDisplayStatus = (status: string, nextWakeupAt: string | null) => {
     if (status !== "running" || !nextWakeupAt) return status;
     const normalized = normalizeUtcTimestamp(nextWakeupAt);
@@ -89,10 +86,8 @@ export default function RunDetailPage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
-    // Set once any action gets a 410 back: this run's Temporal workflow is
-    // permanently gone (not a transient error), so we stop offering actions
-    // on it for the rest of this page visit rather than let every button
-    // fail the same way one at a time.
+    // Set once an action gets a 410 back: this run's workflow is permanently
+    // gone, so further actions on it are disabled for the rest of this visit
     const [workflowUnavailable, setWorkflowUnavailable] = useState(false);
 
     const [eventType, setEventType] = useState(EVENT_TYPES[0]);
@@ -117,6 +112,7 @@ export default function RunDetailPage() {
         }
     };
 
+    // Poll every 2 seconds so this page reflects the agent's activity live
     useEffect(() => {
         void fetchRun();
         const interval = setInterval(() => {
@@ -269,8 +265,9 @@ export default function RunDetailPage() {
                     <section className="rounded-[20px] border border-[#d9d0c7] bg-[#f8f5f1] p-5">
                         <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#68736c]">Activity timeline</div>
                         {run.timeline && run.timeline.length > 0 ? (
-                            <div className="space-y-3">
-                                {run.timeline.map((entry) => (
+                            // Newest entry first, like a stack — the array from the backend is oldest-first
+                            <div className="max-h-[600px] space-y-3 overflow-y-auto pr-1">
+                                {[...run.timeline].reverse().map((entry) => (
                                     <div key={entry.id} className="rounded-2xl border border-[#d9d0c7] bg-[#f2eee8] p-4">
                                         <div className="flex items-center justify-between gap-3">
                                             <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#3b4850]">{entry.type}</div>

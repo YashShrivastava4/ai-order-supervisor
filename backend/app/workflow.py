@@ -24,11 +24,16 @@ with workflow.unsafe.imports_passed_through():
         update_run_status,
     )
 
+# If a call to the agent fails, try it up to 3 times before giving up
 AGENT_TURN_RETRY_POLICY = RetryPolicy(maximum_attempts=3)
 
 
+# One of these runs per order, from the moment it's created until it's done.
+# It keeps waking up (on events or a timer), asking the agent what to do,
+# and going back to sleep, until the order is delivered, terminated, or times out.
 @workflow.defn
 class OrderSupervisorWorkflow:
+    # Everything this run currently knows, kept in memory while it's alive
     def __init__(self):
         self._run_id: str | None = None
         self._order_id: str | None = None
@@ -41,6 +46,7 @@ class OrderSupervisorWorkflow:
         self._paused = False
         self._max_age_deadline: object | None = None
 
+    # Saves the agent's latest memory summary and wake-up guidance to the database
     async def _sync_run_state(self, decision: dict | None):
         if self._run_id is None or not isinstance(decision, dict):
             return
@@ -58,6 +64,7 @@ class OrderSupervisorWorkflow:
         if self._supervisor is not None:
             self._supervisor["wakeup_guidance"] = decision.get("wakeup_guidance") or []
 
+    # Carries out each business action the agent decided on (e.g. messaging a team)
     async def _dispatch_actions(self, decision: dict | None):
         if self._run_id is None or not isinstance(decision, dict):
             return
@@ -91,6 +98,7 @@ class OrderSupervisorWorkflow:
                 start_to_close_timeout=timedelta(minutes=2),
             )
 
+    # Works out when the agent should wake up next, and saves that decision
     async def _apply_sleep_decision(self, decision: dict | None):
         sleep_decision = decision.get("sleep") if isinstance(decision, dict) else None
         reasoning = decision.get("reasoning") if isinstance(decision, dict) else None
@@ -129,6 +137,8 @@ class OrderSupervisorWorkflow:
             start_to_close_timeout=timedelta(minutes=2),
         )
 
+    # Pauses the workflow until either a new signal arrives or a wake-up timer fires,
+    # whichever happens first, and reports back which one it was
     async def _wait_for_signal_or_timer(self):
         if self._next_wakeup_at is None and self._max_age_deadline is None:
             await workflow.wait_condition(lambda: self._signal_received)
@@ -186,6 +196,9 @@ class OrderSupervisorWorkflow:
 
         return "timer"
 
+    # Decides if an incoming order event needs the agent to wake up now,
+    # or can just be logged and dealt with later. Returns True if this event
+    # means the order is done (only "delivered" does that).
     async def _handle_order_event(
         self, event_type: str, payload: dict | None = None
     ) -> bool:
@@ -195,6 +208,7 @@ class OrderSupervisorWorkflow:
         if event_type == "delivered":
             return True
 
+        # Ask the classifier whether this event is worth waking up for
         decision = await workflow.execute_activity(
             classify_signal,
             args=[
@@ -255,6 +269,7 @@ class OrderSupervisorWorkflow:
             start_to_close_timeout=timedelta(minutes=2),
         )
 
+    # Called when a new order event (e.g. shipment_delayed) comes in from the API
     @workflow.signal
     async def order_event(self, event_type: str, payload: dict | None = None):
         self._signal_received = True
@@ -266,12 +281,14 @@ class OrderSupervisorWorkflow:
             self._delivered_completion_requested = True
             return
 
+    # Called to stop this run for good
     @workflow.signal
     async def terminate(self) -> None:
         self._signal_received = True
         self._terminate_requested = True
         self._paused = False
 
+    # Called to pause this run without ending it
     @workflow.signal
     async def interrupt(self) -> None:
         self._signal_received = True
@@ -283,6 +300,7 @@ class OrderSupervisorWorkflow:
                 start_to_close_timeout=timedelta(minutes=2),
             )
 
+    # Called to un-pause a paused run
     @workflow.signal
     async def resume(self) -> None:
         self._signal_received = True
@@ -294,6 +312,7 @@ class OrderSupervisorWorkflow:
                 start_to_close_timeout=timedelta(minutes=2),
             )
 
+    # Called to give the agent an extra instruction to consider on its next turn
     @workflow.signal
     async def add_instruction(self, text: str) -> None:
         self._signal_received = True
@@ -307,6 +326,8 @@ class OrderSupervisorWorkflow:
             start_to_close_timeout=timedelta(minutes=2),
         )
 
+    # Main entry point: starts the run, then loops between waiting and acting
+    # until the order is delivered, terminated, or 72 hours have passed.
     @workflow.run
     async def run(
         self,
@@ -320,9 +341,11 @@ class OrderSupervisorWorkflow:
         self._order_context = order_context
         self._supervisor = supervisor
 
+        # Give up on the run automatically after this many hours, no matter what
         max_age_hours = 72
         self._max_age_deadline = workflow.now() + timedelta(hours=max_age_hours)
 
+        # Let the agent make its first decision as soon as the run starts
         initial_decision = await workflow.execute_activity(
             run_agent_turn,
             args=["workflow_start", run_id, order_id, supervisor, None, order_context],
@@ -333,6 +356,8 @@ class OrderSupervisorWorkflow:
         await self._sync_run_state(initial_decision)
         await self._apply_sleep_decision(initial_decision)
 
+        # Keep looping: check if the run should end, then wait for the next
+        # signal or scheduled wake-up, and react to whichever one shows up
         while True:
             if self._delivered_completion_requested:
                 self._delivered_completion_requested = False
@@ -350,6 +375,7 @@ class OrderSupervisorWorkflow:
                 await self._handle_completion("max workflow age reached", "completed")
                 return
 
+            # While paused, just wait until someone resumes the run
             if self._paused:
                 await workflow.wait_condition(lambda: not self._paused)
                 self._signal_received = False
@@ -357,6 +383,8 @@ class OrderSupervisorWorkflow:
 
             next_action = await self._wait_for_signal_or_timer()
 
+            # Re-check the same completion conditions, since handling that
+            # signal or timer above may have just triggered one of them
             if self._delivered_completion_requested:
                 self._delivered_completion_requested = False
                 await self._handle_completion("delivered event received", "completed")
@@ -383,6 +411,7 @@ class OrderSupervisorWorkflow:
                 await self._handle_completion("max workflow age reached", "completed")
                 return
 
+            # A scheduled wake-up timer fired — ask the agent to check on things again
             if next_action == "timer":
                 decision = await workflow.execute_activity(
                     run_agent_turn,

@@ -18,12 +18,11 @@ Postgres, which is unaffected by the backend restarting. Only the *live* Tempora
 execution is gone.
 
 **Why:** the backend runs FastAPI, the Temporal worker, and a Temporal *dev* server
-(`temporal server start-dev`) together in one Render container, with the dev server persisting
-workflow state to a local sqlite file. Render's free web services have an ephemeral filesystem —
-every restart (idle spin-down, redeploy, or manual restart) wipes local disk, taking that sqlite
-file with it. The dev server comes back up with no memory of any previously running workflow.
-This is inherent to running Temporal's dev server (meant for local development) on free-tier,
-spin-down-prone compute — not a bug in the application code.
+(`temporal server start-dev`) together in one Render container, and that dev server saves its
+state to a local file. Render's free web services don't keep local files between restarts — every
+restart (going idle, a redeploy, or a manual restart) wipes that file. The dev server comes back
+up with no memory of any run that was in progress. This comes from using a dev-only Temporal
+server on free, restart-prone hosting — it's not a bug in the app's own code.
 
 **Current behavior:** the API detects this specific failure (a Temporal `RPCError` with a
 `NOT_FOUND` status — see `WorkflowNotFoundError` in `backend/app/temporal_client.py`) and returns
@@ -41,5 +40,5 @@ this a $0 deployment):
   longer matters. More correct, but real infrastructure work, and Temporal Cloud has no free tier
   for production use (starts at $100/mo).
 
-See `notes.md` for the full investigation and reasoning behind choosing the graceful-degradation
-path over these instead.
+This was a deliberate choice to keep the deployment at $0 rather than move to a paid tier or a
+more complex setup — see the Deployment section in `ARCHITECTURE.md` for the reasoning.

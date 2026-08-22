@@ -1,9 +1,5 @@
-"""One-time setup: creates the supervisors, runs, and activity_log tables.
-
-Run this once after Postgres is up and before starting the worker/API:
-    cd backend
-    python -m scripts.init_db
-"""
+"""Creates the supervisors, runs, and activity_log tables. Run once:
+    cd backend && python -m scripts.init_db"""
 
 from pathlib import Path
 

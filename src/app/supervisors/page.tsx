@@ -37,6 +37,7 @@ export default function SupervisorsPage() {
         wakeup_aggressiveness: "medium",
     });
 
+    // Loads all existing supervisor configs to show in the left panel
     const fetchSupervisors = async () => {
         try {
             const res = await fetch(`${API_BASE_URL}/api/supervisors`);
@@ -63,6 +64,7 @@ export default function SupervisorsPage() {
         }));
     };
 
+    // Creates a new supervisor, then refreshes the list and resets the form
     const handleSubmit = async (event: React.FormEvent) => {
         event.preventDefault();
         setError(null);
