@@ -48,3 +48,16 @@ env/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+
+# --- Temporal runtime data ---
+temporaldata
+temporaldata-journal
+
+# --- Local databases ---
+*.db
+
+# --- Additional environment files ---
+.env.*
+!.env.example
+!backend/.env.example
