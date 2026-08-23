@@ -6,6 +6,9 @@ Each order gets its own background process (a Temporal workflow) that lives from
 completion. It does nothing until there's a real reason to act — no polling, no fixed check-in
 loop.
 
+**Stack:** Next.js frontend, FastAPI backend, one Temporal workflow per order, Groq's
+`openai/gpt-oss-120b` for the LLM reasoning, PostgreSQL (Neon in production) for storage.
+
 ## System Design
 
 ```mermaid
@@ -23,10 +26,29 @@ flowchart TD
   passes events into them, sends run/timeline data back to the UI.
 - **Temporal workflow:** one per order. Holds the run's state (memory, next wake-up time, paused
   or not) and decides *when* the agent should think. Never talks to the LLM or database directly.
-- **The agent (Groq, in an activity called `run_agent_turn`):** reads recent history, asks the LLM
-  what to do, gets back a decision — actions to take, an updated memory summary, how long to sleep.
-- **Database (Postgres):** three tables — `supervisors`, `runs`, `activity_log`. Every event,
-  sleep decision, action, instruction, and final summary is one row in `activity_log`.
+- **The agent (Groq's `openai/gpt-oss-120b`, called inside an activity named `run_agent_turn`):**
+  reads recent history, asks the LLM what to do, gets back a decision — actions to take, an
+  updated memory summary, how long to sleep.
+- **Database (PostgreSQL, Neon in production):** three tables — `supervisors`, `runs`,
+  `activity_log`. Every event, sleep decision, action, instruction, and final summary is one row
+  in `activity_log`.
+
+## How a Decision Gets Made
+
+```mermaid
+flowchart TD
+    S1["Workflow starts"] --> T["Agent turn:<br/>reason -> maybe act -> update memory -> set next sleep"]
+    S2["Event signal arrives"] --> C{"Quick rule check:<br/>worth waking up for?"}
+    C -->|"No, routine"| L["Log it, stay asleep"]
+    C -->|"Yes, urgent"| T
+    S3["Sleep timer runs out"] --> T
+    T --> D{"Delivered, terminated,<br/>or max age reached?"}
+    D -->|"No"| Z["Back to sleep until<br/>next signal or timer"]
+    D -->|"Yes"| F["Write final summary, run ends"]
+```
+
+All three triggers (start, signal, timer) feed the same agent turn. The only branch that skips it
+is a routine event that the rule check decides isn't worth an LLM call.
 
 ## What Wakes the Workflow Up
 
@@ -35,6 +57,22 @@ Only three things:
 1. **It just started** — the agent makes its first decision the moment a run is created.
 2. **An event came in** — payment failed, shipment delayed, customer message, etc.
 3. **A timer ran out** — the agent's own last "check back in X hours" decision came due.
+
+## Signals This Workflow Listens For
+
+Everything from the outside reaches a running workflow through one of these five signals —
+there's no other way in once a run has started:
+
+- **`order_event`** — a business event on the order (e.g. `payment_failed`, `shipment_delayed`).
+  Goes through the rule check above before anything else happens.
+- **`terminate`** — ends the run early and writes the final summary right away.
+- **`interrupt`** — pauses the run; it stops reacting to anything until resumed.
+- **`resume`** — un-pauses a run that was interrupted.
+- **`add_instruction`** — attaches a manual instruction (e.g. "don't contact the customer without
+  review") that the agent picks up on its next turn.
+
+Each one maps to a single API endpoint (`/events`, `/terminate`, `/interrupt`, `/resume`,
+`/instructions`), so the UI only ever talks to the backend — never to Temporal directly.
 
 ## What Makes a Run End
 

@@ -7,6 +7,8 @@ needs its attention, then wakes up, thinks, acts, and goes back to sleep.
 
 **🔗 Live app:** [FrontEnd](https://ai-order-supervisor.vercel.app/)
 **🔗 Backend health check:** [BackEnd](https://order-supervisor-backend-mrpj.onrender.com/health)
+**🔗 Walkthrough Video:** [Walkthrough](https://drive.google.com/file/d/12MQBSbelBlpKtU-sR2YvdMZwoXlV1Ws3/view?usp=sharing)
+
 
 > Wake the backend before using the app. It's hosted on a free service that goes to sleep after
 > a while of no traffic — open the health check link above first and wait for it to respond, then
