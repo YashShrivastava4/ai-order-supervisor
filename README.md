@@ -146,6 +146,8 @@ order-supervisor/
 │   ├── scripts/
 │   │   ├── init_db.py              # Creates the database tables
 │   │   └── seed_demo.py            # Quick manual test script
+│   ├── tests/                      # pytest suite — unit + workflow-level (see Running Tests)
+│   ├── requirements-dev.txt        # Adds pytest/pytest-asyncio on top of requirements.txt
 │   ├── Dockerfile
 │   └── start.sh                    # Starts all three backend processes together
 ├── docker-compose.yml          # Local Postgres for development
@@ -216,6 +218,23 @@ Open http://localhost:3000
 The frontend talks to `http://localhost:8000` by default. To point it somewhere else, set
 `NEXT_PUBLIC_API_URL` (see `.env.example`).
 
+## Running Tests
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+pytest
+```
+
+- `tests/test_classify_event.py` and `tests/test_normalize_decision.py` are plain unit tests —
+  no Temporal, no database, no network. These always run.
+- `tests/test_workflow.py` exercises the actual workflow logic (queued-event draining, pause/
+  resume, scheduled wake-ups, waiting for in-flight handlers before completing) using Temporal's
+  time-skipping test environment with mocked activities — no real Postgres or Groq call involved.
+  The first run downloads a small local test-server binary from `temporal.download`; if your
+  network blocks that domain, these specific tests will error at setup rather than fail on an
+  assertion.
+
 ## Known Limitations
 
 - **A backend restart can lose a run's live state.** The free hosting plan restarts the backend
@@ -227,8 +246,9 @@ The frontend talks to `http://localhost:8000` by default. To point it somewhere 
 - **No real external messaging.** The five business actions just write a record to the activity
   log — nothing is actually sent to a real team or customer. That's intentional for this project's
   scope.
-- **One retry on a bad LLM response**, not an unlimited loop, if the model returns something that
-  doesn't parse correctly.
+- **Up to 3 attempts on a bad or failed LLM response**, not an unlimited loop. If all 3 fail (bad
+  JSON, empty response, Groq being down), the run doesn't crash — it logs an internal note and
+  retries again in 30 minutes.
 
 A closer look at how the whole system fits together is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 

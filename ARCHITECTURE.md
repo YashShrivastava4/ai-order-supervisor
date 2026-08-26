@@ -50,6 +50,35 @@ flowchart TD
 All three triggers (start, signal, timer) feed the same agent turn. The only branch that skips it
 is a routine event that the rule check decides isn't worth an LLM call.
 
+**Events are queued, not handled inline.** The `order_event` signal handler itself does nothing
+but append the event to an in-memory list and mark that a signal arrived — it has no `await` in
+it, so it always finishes instantly. The single `run()` loop is the only place that actually reads
+that list and processes events, one at a time: rule check, then (if needed) agent turn, dispatch,
+memory update, and sleep decision, fully finishing for one event before starting the next. Two
+events arriving back-to-back can never trigger two overlapping agent turns or race each other's
+sleep-timer writes — everything about "what does the agent do next" runs through one place,
+serially.
+
+## Reliability Details
+
+A few things make repeated or overlapping activity execution safe, which matters once retries and
+concurrent signals are in the picture:
+
+- **Every database write from an activity is idempotent.** The row's id is minted in the
+  workflow with `workflow.uuid4()` (a deterministic, replay-safe UUID generator built into the
+  Temporal SDK for exactly this) and passed into the activity, instead of the activity generating
+  its own id. If an activity gets retried after its write already landed, it reuses the same id
+  and the database `INSERT ... ON CONFLICT DO NOTHING`s instead of writing a second row.
+- **The workflow waits for in-flight signal handlers before closing.** `terminate` or a
+  `delivered` event can complete the run while a slower handler (`interrupt`, `resume`,
+  `add_instruction`) is still mid-activity. Right before writing the final summary, the workflow
+  calls `workflow.wait_condition(workflow.all_handlers_finished)` so that handler's write always
+  lands before the run is marked closed.
+- **A Groq outage degrades the run instead of killing it.** If `run_agent_turn` still fails after
+  its 3 retries, the workflow catches that, writes an internal note explaining what happened, and
+  schedules a retry 30 minutes later — rather than letting the whole order's supervision die
+  permanently on a transient LLM error.
+
 ## What Wakes the Workflow Up
 
 Only three things:
@@ -139,7 +168,10 @@ This is a proof-of-concept, so a few things are left out on purpose:
 - Real messaging or commerce integrations — actions just get logged, nothing is actually sent.
 - User accounts, authentication, or multiple separate businesses.
 - Trimming a run's history for extremely long-running orders (`continue_as_new` in Temporal
-  terms) — the rolling memory summary already covers this project's scope.
+  terms) — the rolling memory summary already covers this project's scope. Concretely: a run is
+  capped at 72 hours and typically wakes at most once or twice an hour, each wake-up adding a
+  handful of activity-log rows and one workflow history event — nowhere near Temporal's workflow
+  history size limits at this scale, so `continue_as_new` isn't needed here.
 - Analytics beyond the run list and filters already in the dashboard.
 - A separate "pause" button — pause and interrupt do the same thing here, so they're one signal.
 

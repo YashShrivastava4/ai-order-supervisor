@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError
 
 with workflow.unsafe.imports_passed_through():
     from .activities import (
@@ -45,6 +46,10 @@ class OrderSupervisorWorkflow:
         self._delivered_completion_requested = False
         self._paused = False
         self._max_age_deadline: object | None = None
+        # Events recorded by order_event but not yet processed. The signal
+        # handler only ever appends here; the run() loop is the sole place
+        # that drains this queue, one event at a time.
+        self._pending_events: list[tuple[str, dict]] = []
 
     # Saves the agent's latest memory summary and wake-up guidance to the database
     async def _sync_run_state(self, decision: dict | None):
@@ -92,9 +97,13 @@ class OrderSupervisorWorkflow:
                 continue
 
             activity_fn = action_type_map[action_type]
+            # Minted here (not inside the activity) so a retry of this exact
+            # activity attempt always carries the same id, letting the DB
+            # write below be a no-op on duplicate instead of a duplicate row.
+            log_id = str(workflow.uuid4())
             await workflow.execute_activity(
                 activity_fn,
-                args=[self._run_id, details],
+                args=[self._run_id, details, log_id],
                 start_to_close_timeout=timedelta(minutes=2),
             )
 
@@ -108,7 +117,7 @@ class OrderSupervisorWorkflow:
             mode = "none"
         elif sleep_decision.get("mode") == "duration_hours":
             try:
-                hours = int(sleep_decision.get("value", 6))
+                hours = float(sleep_decision.get("value", 6))
             except (TypeError, ValueError):
                 hours = 6
             self._next_wakeup_at = workflow.now() + timedelta(hours=max(hours, 0))
@@ -131,11 +140,29 @@ class OrderSupervisorWorkflow:
             start_to_close_timeout=timedelta(minutes=2),
         )
         # record what the agent decided and why, so it shows up on the run timeline
+        log_id = str(workflow.uuid4())
         await workflow.execute_activity(
             record_sleep_decision,
-            args=[self._run_id, reasoning, mode, next_wakeup_iso],
+            args=[self._run_id, reasoning, mode, next_wakeup_iso, log_id],
             start_to_close_timeout=timedelta(minutes=2),
         )
+
+    # Used when run_agent_turn fails after exhausting its retries. Keeps the
+    # order's supervision alive instead of letting a transient LLM outage
+    # kill the whole workflow permanently.
+    async def _agent_turn_fallback(self) -> dict:
+        if self._run_id is not None:
+            log_id = str(workflow.uuid4())
+            await workflow.execute_activity(
+                create_internal_note,
+                args=[
+                    self._run_id,
+                    "Agent turn failed after retries; will retry in 30 minutes.",
+                    log_id,
+                ],
+                start_to_close_timeout=timedelta(minutes=2),
+            )
+        return {"sleep": {"mode": "duration_hours", "value": 0.5}}
 
     # Pauses the workflow until either a new signal arrives or a wake-up timer fires,
     # whichever happens first, and reports back which one it was
@@ -220,26 +247,30 @@ class OrderSupervisorWorkflow:
         )
 
         if decision == "wake_now":
-            result = await workflow.execute_activity(
-                run_agent_turn,
-                args=[
-                    "event",
-                    self._run_id,
-                    self._order_id,
-                    self._supervisor,
-                    {"type": event_type, "payload": payload or {}},
-                    self._order_context,
-                ],
-                start_to_close_timeout=timedelta(minutes=5),
-                retry_policy=AGENT_TURN_RETRY_POLICY,
-            )
+            try:
+                result = await workflow.execute_activity(
+                    run_agent_turn,
+                    args=[
+                        "event",
+                        self._run_id,
+                        self._order_id,
+                        self._supervisor,
+                        {"type": event_type, "payload": payload or {}},
+                        self._order_context,
+                    ],
+                    start_to_close_timeout=timedelta(minutes=5),
+                    retry_policy=AGENT_TURN_RETRY_POLICY,
+                )
+            except ActivityError:
+                result = await self._agent_turn_fallback()
             await self._dispatch_actions(result)
             await self._sync_run_state(result)
             await self._apply_sleep_decision(result)
         elif decision == "log_and_wait":
+            log_id = str(workflow.uuid4())
             await workflow.execute_activity(
                 log_incoming_event,
-                args=[self._run_id, event_type, payload or {}],
+                args=[self._run_id, event_type, payload or {}, log_id],
                 start_to_close_timeout=timedelta(minutes=2),
             )
             await self._apply_sleep_decision({"sleep": {"mode": "until_next_event"}})
@@ -263,23 +294,36 @@ class OrderSupervisorWorkflow:
             retry_policy=AGENT_TURN_RETRY_POLICY,
         )
 
+        # Let any signal handler that was already in flight (interrupt/resume/
+        # add_instruction) finish its write *before* we persist the run as
+        # completed. Checking only after update_run_completion (as before)
+        # let a slower handler's write land after — or race with — the
+        # completion write; checking here orders it correctly instead.
+        await workflow.wait_condition(workflow.all_handlers_finished)
+
+        log_id = str(workflow.uuid4())
         await workflow.execute_activity(
             update_run_completion,
-            args=[self._run_id, final_output, completion_status],
+            args=[self._run_id, final_output, completion_status, log_id],
             start_to_close_timeout=timedelta(minutes=2),
         )
 
-    # Called when a new order event (e.g. shipment_delayed) comes in from the API
-    @workflow.signal
-    async def order_event(self, event_type: str, payload: dict | None = None):
-        self._signal_received = True
-        if self._paused:
-            return
+        # The activity call above was itself an await point, so a brand-new
+        # signal could in principle have arrived and started its own handler
+        # during it. Checking again right before returning is what actually
+        # guarantees the workflow never closes mid-handler — the property
+        # this fix exists for in the first place.
+        await workflow.wait_condition(workflow.all_handlers_finished)
 
-        completion_triggered = await self._handle_order_event(event_type, payload)
-        if completion_triggered:
-            self._delivered_completion_requested = True
-            return
+    # Called when a new order event (e.g. shipment_delayed) comes in from the API.
+    # No awaits here on purpose — this must complete instantly so two signals
+    # arriving close together can never overlap into two concurrent agent turns.
+    # It only ever records that something happened; run() is the sole place
+    # that decides what to do about it.
+    @workflow.signal
+    async def order_event(self, event_type: str, payload: dict | None = None) -> None:
+        self._pending_events.append((event_type, payload or {}))
+        self._signal_received = True
 
     # Called to stop this run for good
     @workflow.signal
@@ -320,9 +364,10 @@ class OrderSupervisorWorkflow:
         if not cleaned or self._run_id is None:
             return
 
+        log_id = str(workflow.uuid4())
         await workflow.execute_activity(
             record_manual_instruction,
-            args=[self._run_id, cleaned],
+            args=[self._run_id, cleaned, log_id],
             start_to_close_timeout=timedelta(minutes=2),
         )
 
@@ -341,17 +386,23 @@ class OrderSupervisorWorkflow:
         self._order_context = order_context
         self._supervisor = supervisor
 
-        # Give up on the run automatically after this many hours, no matter what
+        # Give up on the run automatically after this many hours, no matter what.
+        # At most ~72 hourly wake-ups plus a handful of log rows per wake-up is
+        # nowhere near Temporal's workflow history size limits at this scope,
+        # so continue_as_new isn't needed here.
         max_age_hours = 72
         self._max_age_deadline = workflow.now() + timedelta(hours=max_age_hours)
 
         # Let the agent make its first decision as soon as the run starts
-        initial_decision = await workflow.execute_activity(
-            run_agent_turn,
-            args=["workflow_start", run_id, order_id, supervisor, None, order_context],
-            start_to_close_timeout=timedelta(minutes=5),
-            retry_policy=AGENT_TURN_RETRY_POLICY,
-        )
+        try:
+            initial_decision = await workflow.execute_activity(
+                run_agent_turn,
+                args=["workflow_start", run_id, order_id, supervisor, None, order_context],
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=AGENT_TURN_RETRY_POLICY,
+            )
+        except ActivityError:
+            initial_decision = await self._agent_turn_fallback()
         await self._dispatch_actions(initial_decision)
         await self._sync_run_state(initial_decision)
         await self._apply_sleep_decision(initial_decision)
@@ -378,7 +429,13 @@ class OrderSupervisorWorkflow:
             # While paused, just wait until someone resumes the run
             if self._paused:
                 await workflow.wait_condition(lambda: not self._paused)
-                self._signal_received = False
+                # An order_event that arrived while paused already queued
+                # itself in _pending_events and set _signal_received — that
+                # flag must survive resume so the drain loop below picks it
+                # straight up. Only clear it if there's genuinely nothing
+                # queued (e.g. resume() itself was the only thing that set it).
+                if not self._pending_events:
+                    self._signal_received = False
                 continue
 
             next_action = await self._wait_for_signal_or_timer()
@@ -401,10 +458,23 @@ class OrderSupervisorWorkflow:
                 await self._handle_completion("max workflow age reached", "completed")
                 return
 
-            if next_action == "signal" and not self._signal_received:
-                continue
-
-            if next_action == "signal" and self._signal_received:
+            if next_action == "signal":
+                # Drain queued events one at a time in this single-threaded
+                # loop, so classify -> agent-turn -> dispatch -> sleep-decision
+                # always runs serially, never concurrently across two events.
+                while self._pending_events:
+                    if self._paused:
+                        # Guard against pause/resume timing changing later —
+                        # a delivered event queued during a pause shouldn't be
+                        # auto-honored the moment draining resumes.
+                        break
+                    event_type, payload = self._pending_events.pop(0)
+                    completion_triggered = await self._handle_order_event(
+                        event_type, payload
+                    )
+                    if completion_triggered:
+                        self._delivered_completion_requested = True
+                        break
                 continue
 
             if next_action == "max_age":
@@ -413,19 +483,22 @@ class OrderSupervisorWorkflow:
 
             # A scheduled wake-up timer fired — ask the agent to check on things again
             if next_action == "timer":
-                decision = await workflow.execute_activity(
-                    run_agent_turn,
-                    args=[
-                        "scheduled_wakeup",
-                        run_id,
-                        order_id,
-                        supervisor,
-                        None,
-                        self._order_context,
-                    ],
-                    start_to_close_timeout=timedelta(minutes=5),
-                    retry_policy=AGENT_TURN_RETRY_POLICY,
-                )
+                try:
+                    decision = await workflow.execute_activity(
+                        run_agent_turn,
+                        args=[
+                            "scheduled_wakeup",
+                            run_id,
+                            order_id,
+                            supervisor,
+                            None,
+                            self._order_context,
+                        ],
+                        start_to_close_timeout=timedelta(minutes=5),
+                        retry_policy=AGENT_TURN_RETRY_POLICY,
+                    )
+                except ActivityError:
+                    decision = await self._agent_turn_fallback()
                 await self._dispatch_actions(decision)
                 await self._sync_run_state(decision)
                 await self._apply_sleep_decision(decision)

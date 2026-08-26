@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import os
-import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from groq import Groq
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from temporalio import activity
 
 from app.db import ActivityLog, Run, SessionLocal
@@ -122,21 +122,28 @@ def _resolve_model(supervisor: dict) -> str:
     return DEFAULT_GROQ_MODEL
 
 
-# Shared helper: saves one business action (like messaging a team) to the activity log
-def _write_activity_log_row(run_id: str, action: str, details: str) -> dict[str, str]:
-    payload = {"action": str(action), "details": str(details)}
+# Shared helper: upserts one activity-log row by a caller-supplied id.
+# The id is minted in the workflow (via workflow.uuid4(), which is
+# replay-safe) rather than here, so a retried activity attempt reuses the
+# same id and this becomes a no-op instead of a duplicate row.
+def _upsert_activity_log_row(
+    log_id: str, run_id: str, row_type: str, payload: dict[str, Any]
+) -> dict[str, Any]:
     db = SessionLocal()
     try:
-        row = ActivityLog(
-            id=str(uuid.uuid4()),
-            run_id=str(run_id),
-            type="agent_action",
-            payload=payload,
-            created_at=datetime.now(timezone.utc),
+        stmt = (
+            pg_insert(ActivityLog)
+            .values(
+                id=log_id,
+                run_id=str(run_id),
+                type=row_type,
+                payload=payload,
+                created_at=datetime.now(timezone.utc),
+            )
+            .on_conflict_do_nothing(index_elements=["id"])
         )
-        db.add(row)
+        db.execute(stmt)
         db.commit()
-        db.refresh(row)
         return payload
     finally:
         db.close()
@@ -145,74 +152,51 @@ def _write_activity_log_row(run_id: str, action: str, details: str) -> dict[str,
 # The 5 business actions the agent can take. Each just writes a row to the
 # activity log — nothing is actually sent to a real team or customer.
 @activity.defn
-async def message_fulfillment_team(run_id: str, details: str) -> dict[str, str]:
-    return _write_activity_log_row(run_id, "message_fulfillment_team", details)
+async def message_fulfillment_team(run_id: str, details: str, log_id: str) -> dict[str, str]:
+    payload = {"action": "message_fulfillment_team", "details": str(details)}
+    return _upsert_activity_log_row(log_id, run_id, "agent_action", payload)
 
 
 @activity.defn
-async def message_payments_team(run_id: str, details: str) -> dict[str, str]:
-    return _write_activity_log_row(run_id, "message_payments_team", details)
+async def message_payments_team(run_id: str, details: str, log_id: str) -> dict[str, str]:
+    payload = {"action": "message_payments_team", "details": str(details)}
+    return _upsert_activity_log_row(log_id, run_id, "agent_action", payload)
 
 
 @activity.defn
-async def message_logistics_team(run_id: str, details: str) -> dict[str, str]:
-    return _write_activity_log_row(run_id, "message_logistics_team", details)
+async def message_logistics_team(run_id: str, details: str, log_id: str) -> dict[str, str]:
+    payload = {"action": "message_logistics_team", "details": str(details)}
+    return _upsert_activity_log_row(log_id, run_id, "agent_action", payload)
 
 
 @activity.defn
-async def message_customer(run_id: str, details: str) -> dict[str, str]:
-    return _write_activity_log_row(run_id, "message_customer", details)
+async def message_customer(run_id: str, details: str, log_id: str) -> dict[str, str]:
+    payload = {"action": "message_customer", "details": str(details)}
+    return _upsert_activity_log_row(log_id, run_id, "agent_action", payload)
 
 
 @activity.defn
-async def create_internal_note(run_id: str, details: str) -> dict[str, str]:
-    return _write_activity_log_row(run_id, "create_internal_note", details)
+async def create_internal_note(run_id: str, details: str, log_id: str) -> dict[str, str]:
+    payload = {"action": "create_internal_note", "details": str(details)}
+    return _upsert_activity_log_row(log_id, run_id, "agent_action", payload)
 
 
 # Saves a routine event to the activity log without waking the agent up
 @activity.defn
 async def log_incoming_event(
-    run_id: str, event_type: str, payload: dict | None = None
+    run_id: str, event_type: str, payload: dict | None, log_id: str
 ) -> dict[str, Any]:
-    db = SessionLocal()
-    try:
-        row = ActivityLog(
-            id=str(uuid.uuid4()),
-            run_id=str(run_id),
-            type="incoming_event",
-            payload={"event_type": str(event_type), "payload": payload or {}},
-            created_at=datetime.now(timezone.utc),
-        )
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-        return row.payload
-    finally:
-        db.close()
+    row_payload = {"event_type": str(event_type), "payload": payload or {}}
+    return _upsert_activity_log_row(log_id, run_id, "incoming_event", row_payload)
 
 
 # Saves a person's manual instruction to the activity log so the agent sees it next turn
 @activity.defn
-async def record_manual_instruction(run_id: str, text: str) -> dict[str, str]:
+async def record_manual_instruction(run_id: str, text: str, log_id: str) -> dict[str, str]:
     cleaned = str(text).strip()
     if not cleaned:
         return {"text": ""}
-
-    db = SessionLocal()
-    try:
-        row = ActivityLog(
-            id=str(uuid.uuid4()),
-            run_id=str(run_id),
-            type="manual_instruction",
-            payload={"text": cleaned},
-            created_at=datetime.now(timezone.utc),
-        )
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-        return row.payload
-    finally:
-        db.close()
+    return _upsert_activity_log_row(log_id, run_id, "manual_instruction", {"text": cleaned})
 
 
 @activity.defn
@@ -221,6 +205,7 @@ async def record_sleep_decision(
     reasoning: str | None,
     mode: str,
     next_wakeup_at: str | None,
+    log_id: str,
 ) -> dict[str, str]:
     """Log why the agent went back to sleep, and for how long."""
     payload = {
@@ -228,21 +213,7 @@ async def record_sleep_decision(
         "mode": mode,
         "next_wakeup_at": next_wakeup_at or "no timer",
     }
-    db = SessionLocal()
-    try:
-        row = ActivityLog(
-            id=str(uuid.uuid4()),
-            run_id=str(run_id),
-            type="sleep_decision",
-            payload=payload,
-            created_at=datetime.now(timezone.utc),
-        )
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-        return row.payload
-    finally:
-        db.close()
+    return _upsert_activity_log_row(log_id, run_id, "sleep_decision", payload)
 
 
 # Saves the run's next wake-up time to the database (or clears it if there isn't one)
@@ -299,6 +270,57 @@ async def sync_run_memory_and_guidance(
         }
     finally:
         db.close()
+
+
+# Don't trust the model's JSON blindly — clean it up into a shape the rest of
+# the app can rely on, falling back to safe defaults where needed. Pulled out
+# as its own pure function (no DB, no network) so it can be unit tested with
+# malformed inputs directly, without needing Temporal or a live Groq call.
+def _normalize_decision(decision: dict, current_memory: str) -> dict:
+    actions = decision.get("actions") or []
+    normalized_actions = []
+    if isinstance(actions, list):
+        for item in actions:
+            if isinstance(item, dict):
+                action_type = item.get("type")
+                details = item.get("details")
+                if action_type is not None and details is not None:
+                    normalized_actions.append(
+                        {"type": str(action_type), "details": str(details)}
+                    )
+
+    wakeup_guidance = decision.get("wakeup_guidance") or []
+    normalized_guidance = []
+    if isinstance(wakeup_guidance, list):
+        normalized_guidance = [str(item) for item in wakeup_guidance]
+
+    sleep_value = decision.get("sleep") or {"mode": "duration_hours", "value": 6}
+    if isinstance(sleep_value, dict):
+        sleep_mode = sleep_value.get("mode")
+        if sleep_mode not in {"duration_hours", "until_next_event"}:
+            sleep_mode = "duration_hours"
+        if sleep_mode == "duration_hours":
+            try:
+                sleep_duration = int(sleep_value.get("value", 6))
+            except (TypeError, ValueError):
+                sleep_duration = 6
+            normalized_sleep = {"mode": "duration_hours", "value": sleep_duration}
+        else:
+            normalized_sleep = {"mode": "until_next_event"}
+    else:
+        normalized_sleep = {"mode": "duration_hours", "value": 6}
+
+    return {
+        "reasoning": str(
+            decision.get("reasoning")
+            or "Monitoring order health and making a decision."
+        ),
+        "actions": normalized_actions,
+        "memory_summary": str(decision.get("memory_summary") or current_memory),
+        "wakeup_guidance": normalized_guidance,
+        "sleep": normalized_sleep,
+        "recommend_completion": bool(decision.get("recommend_completion", False)),
+    }
 
 
 # The main agent call: asks Groq what to do next given the run's history,
@@ -402,54 +424,7 @@ async def run_agent_turn(
     if not isinstance(decision, dict):
         raise RuntimeError(f"Groq returned a non-object payload for run {run_id}")
 
-    # Don't trust the model's JSON blindly — clean it up into a shape the
-    # rest of the app can rely on, falling back to safe defaults where needed
-    actions = decision.get("actions") or []
-    normalized_actions = []
-    if isinstance(actions, list):
-        for item in actions:
-            if isinstance(item, dict):
-                action_type = item.get("type")
-                details = item.get("details")
-                if action_type is not None and details is not None:
-                    normalized_actions.append(
-                        {"type": str(action_type), "details": str(details)}
-                    )
-
-    wakeup_guidance = decision.get("wakeup_guidance") or []
-    normalized_guidance = []
-    if isinstance(wakeup_guidance, list):
-        normalized_guidance = [str(item) for item in wakeup_guidance]
-
-    sleep_value = decision.get("sleep") or {"mode": "duration_hours", "value": 6}
-    if isinstance(sleep_value, dict):
-        sleep_mode = sleep_value.get("mode")
-        if sleep_mode not in {"duration_hours", "until_next_event"}:
-            sleep_mode = "duration_hours"
-        if sleep_mode == "duration_hours":
-            try:
-                sleep_duration = int(sleep_value.get("value", 6))
-            except (TypeError, ValueError):
-                sleep_duration = 6
-            normalized_sleep = {"mode": "duration_hours", "value": sleep_duration}
-        else:
-            normalized_sleep = {"mode": "until_next_event"}
-    else:
-        normalized_sleep = {"mode": "duration_hours", "value": 6}
-
-    normalized = {
-        "reasoning": str(
-            decision.get("reasoning")
-            or "Monitoring order health and making a decision."
-        ),
-        "actions": normalized_actions,
-        "memory_summary": str(decision.get("memory_summary") or current_memory),
-        "wakeup_guidance": normalized_guidance,
-        "sleep": normalized_sleep,
-        "recommend_completion": bool(decision.get("recommend_completion", False)),
-    }
-
-    return normalized
+    return _normalize_decision(decision, current_memory)
 
 
 # Thin wrapper so the workflow can call classify_event as a Temporal activity
@@ -557,7 +532,7 @@ async def generate_final_output(
 
 @activity.defn
 async def update_run_completion(
-    run_id: str, final_output: dict[str, Any], completion_status: str
+    run_id: str, final_output: dict[str, Any], completion_status: str, log_id: str
 ) -> dict[str, str]:
     """Update runs table with final_summary and status, and log final_output."""
     db = SessionLocal()
@@ -573,14 +548,18 @@ async def update_run_completion(
         run.updated_at = now
         db.add(run)
 
-        activity_log_row = ActivityLog(
-            id=str(uuid.uuid4()),
-            run_id=run_id,
-            type="final_output",
-            payload=final_output,
-            created_at=now,
+        stmt = (
+            pg_insert(ActivityLog)
+            .values(
+                id=log_id,
+                run_id=run_id,
+                type="final_output",
+                payload=final_output,
+                created_at=now,
+            )
+            .on_conflict_do_nothing(index_elements=["id"])
         )
-        db.add(activity_log_row)
+        db.execute(stmt)
 
         db.commit()
     finally:
